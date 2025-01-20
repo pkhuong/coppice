@@ -3,22 +3,65 @@ use std::collections::HashMap;
 
 use crate::bad_trie::Builder;
 use crate::bad_trie::Node;
+use crate::JoinKey;
 use crate::Value;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Input(u8);
+#[derive(Debug)]
+pub struct Inverse<'a, T: JoinKey>(u8, std::marker::PhantomData<fn(&'a T) -> &'a T>); // Invariant over 'a
+
+#[derive(Debug, Default)]
+pub struct InverseContext<'a> {
+    counter: usize,
+    values: Vec<Box<[u8]>>,
+    _invariant: std::marker::PhantomData<fn(&'a ()) -> &'a ()>,
+    _no_send: std::cell::UnsafeCell<()>,
+}
+
+impl<'a, T: JoinKey> Inverse<'a, T> {
+    fn new(context: &mut InverseContext<'a>) -> Result<Self, &'static str> {
+        let idx = context.counter;
+        if idx > u8::MAX as usize {
+            return Err("too many join keys for context");
+        }
+
+        context.counter += 1;
+        Ok(Self(idx as u8, Default::default()))
+    }
+
+    pub fn fake(context: &mut InverseContext<'a>, value: &T) -> Result<Self, &'static str> {
+        context.values.push(Box::from(value.to_bytes().as_ref()));
+        Self::new(context)
+    }
+}
+
+impl InverseContext<'_> {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn keys(&self) -> Vec<&[u8]> {
+        self.values.iter().map(|x| &**x).collect::<Vec<_>>()
+    }
+}
 
 pub struct SearchToken<'a> {
     state: &'a mut SearchState,
+    // Make the lifetime invariant
+    _marker: std::marker::PhantomData<fn(&'a ()) -> &'a ()>,
 }
 
 impl SearchToken<'_> {
-    pub fn get(self, input: Input, index: u32) -> (Self, bool) {
+    pub fn get<T: JoinKey>(self, input: &Inverse<T>, index: u32) -> (Self, bool) {
+        self.state
+            .check_mapping(input.0, &input as *const _ as usize);
         let ret = self.state.get(input.0, index);
         (self, ret)
     }
 
-    pub fn eql(self, input: Input, value: impl AsRef<[u8]>) -> (Self, bool) {
+    pub fn eql<T: JoinKey>(self, input: &Inverse<T>, value: &T) -> (Self, bool) {
+        self.state
+            .check_mapping(input.0, &input as *const _ as usize);
+        let value = value.to_bytes();
         let bytes: &[u8] = value.as_ref();
         for (byte_idx, byte) in bytes.iter().copied().enumerate() {
             for bit_idx in 0..8 {
@@ -37,6 +80,7 @@ type Choice = (u8, u32, bool);
 
 #[derive(Debug, Default)]
 struct SearchState {
+    index_mapping: HashMap<u8, usize>,
     cache: HashMap<(u8, u32), bool>,
     num_choices: usize,
     next_path_to_explore: Vec<Choice>,
@@ -46,6 +90,12 @@ struct SearchState {
 impl SearchState {
     fn new() -> SearchState {
         Default::default()
+    }
+
+    fn check_mapping(&mut self, input: u8, addr: usize) {
+        if *self.index_mapping.entry(input).or_insert(addr) != addr {
+            self.error = Some("invalid mapping for input join key");
+        }
     }
 
     fn get(&mut self, input: u8, index: u32) -> bool {
@@ -95,19 +145,25 @@ impl SearchState {
     }
 }
 
-pub fn reverse_function<T: Value>(
+pub fn reverse_function<T: Value, JK>(
     builder: &Builder<T>,
-    count: u8,
-    worker: impl for<'a> Fn(SearchToken<'a>, &[Input]) -> (SearchToken<'a>, T),
+    join_keys: &JK,
+    worker: impl for<'a> Fn(SearchToken<'a>, &JK) -> (SearchToken<'a>, T),
 ) -> Result<Node<T>, &'static str> {
-    let inputs = (0..count).map(Input).collect::<Vec<Input>>();
-
     let mut acc = builder.make_empty();
     let mut state = SearchState::new();
     loop {
-        let (_token, value) = worker(SearchToken { state: &mut state }, &inputs);
+        let token = SearchToken {
+            state: &mut state,
+            _marker: Default::default(),
+        };
+        let (_token, value) = worker(token, join_keys);
         let spine = builder.make_spine(state.path(), value);
         acc = builder.disjoint_union(acc, spine)?;
+
+        if let Some(e) = state.error {
+            return Err(e);
+        }
 
         state.advance_state();
         if state.fathomed() {
@@ -118,11 +174,11 @@ pub fn reverse_function<T: Value>(
     Ok(acc)
 }
 
-pub fn map_reverse<T: Value + Send, Row: Send>(
+pub fn map_reverse<T: Value + Send, Row: Send, JK: Sync>(
     builder: &Builder<T>,
     items: impl rayon::iter::IntoParallelIterator<Item = Row>,
-    param_count: u8,
-    worker: impl for<'a> Fn(SearchToken<'a>, &[Input], &Row) -> (SearchToken<'a>, T) + Sync + Send,
+    join_keys: &JK,
+    worker: impl for<'a> Fn(SearchToken<'a>, &JK, &Row) -> (SearchToken<'a>, T) + Sync + Send,
 ) -> Result<Node<T>, &'static str> {
     use rayon::iter::ParallelIterator;
 
@@ -131,7 +187,7 @@ pub fn map_reverse<T: Value + Send, Row: Send>(
     items
         .into_par_iter()
         .map(|row| {
-            reverse_function(builder, param_count, |token, inputs| {
+            reverse_function(builder, join_keys, |token, inputs| {
                 worker(token, inputs, &row)
             })
         })
@@ -140,6 +196,8 @@ pub fn map_reverse<T: Value + Send, Row: Send>(
 
 #[cfg(test)]
 mod test {
+    use super::Inverse;
+    use super::InverseContext;
     use super::SearchToken;
     use crate::bad_trie::Builder;
     use crate::bad_trie::Node;
@@ -161,11 +219,17 @@ mod test {
     #[test]
     fn test_reverse_smoke() {
         let builder = Builder::new();
-        let cache =
-            super::reverse_function(&builder, 2, |token, inputs| -> (SearchToken<'_>, Counter) {
+        let mut ctx = InverseContext::new();
+        let cache = super::reverse_function(
+            &builder,
+            &[
+                Inverse::fake(&mut ctx, &0u8).unwrap(),
+                Inverse::fake(&mut ctx, &0u8).unwrap(),
+            ],
+            |token, inputs| -> (SearchToken<'_>, Counter) {
                 assert_eq!(inputs.len(), 2);
-                let (token, x) = token.get(inputs[0], 1);
-                let (token, y) = token.get(inputs[1], 0);
+                let (token, x) = token.get(&inputs[0], 1);
+                let (token, y) = token.get(&inputs[1], 0);
 
                 (
                     token,
@@ -173,8 +237,9 @@ mod test {
                         count: (x as usize) + (y as usize),
                     },
                 )
-            })
-            .expect("should work");
+            },
+        )
+        .expect("should work");
 
         println!("nodes: {:?}", &cache);
         assert_eq!(cache.lookup(&[&[0u8][..], &[0u8][..]]).unwrap(), None);
@@ -200,15 +265,22 @@ mod test {
     #[test]
     fn test_reverse_simplify_zero() {
         let builder = Builder::new();
-        let cache =
-            super::reverse_function(&builder, 2, |token, inputs| -> (SearchToken<'_>, Counter) {
+        let mut ctx = InverseContext::new();
+        let cache = super::reverse_function(
+            &builder,
+            &[
+                Inverse::fake(&mut ctx, &0u8).unwrap(),
+                Inverse::fake(&mut ctx, &0u8).unwrap(),
+            ],
+            |token, inputs| -> (SearchToken<'_>, Counter) {
                 assert_eq!(inputs.len(), 2);
-                let (token, _x) = token.get(inputs[0], 1);
-                let (token, _y) = token.get(inputs[1], 0);
+                let (token, _x) = token.get(&inputs[0], 1);
+                let (token, _y) = token.get(&inputs[1], 0);
 
                 (token, Counter { count: 0 })
-            })
-            .expect("should work");
+            },
+        )
+        .expect("should work");
 
         assert!(matches!(cache, Node::Default));
     }
@@ -216,15 +288,22 @@ mod test {
     #[test]
     fn test_reverse_simplify_equal() {
         let builder = Builder::new();
-        let cache =
-            super::reverse_function(&builder, 2, |token, inputs| -> (SearchToken<'_>, Counter) {
+        let mut ctx = InverseContext::new();
+        let cache = super::reverse_function(
+            &builder,
+            &[
+                Inverse::fake(&mut ctx, &0u8).unwrap(),
+                Inverse::fake(&mut ctx, &0u8).unwrap(),
+            ],
+            |token, inputs| -> (SearchToken<'_>, Counter) {
                 assert_eq!(inputs.len(), 2);
-                let (token, _x) = token.get(inputs[0], 1);
-                let (token, _y) = token.get(inputs[1], 0);
+                let (token, _x) = token.get(&inputs[0], 1);
+                let (token, _y) = token.get(&inputs[1], 0);
 
                 (token, Counter { count: 1 })
-            })
-            .expect("should work");
+            },
+        )
+        .expect("should work");
 
         assert!(matches!(cache, Node::Leaf(_)));
         assert_eq!(
@@ -236,12 +315,13 @@ mod test {
     #[test]
     fn test_map_reverse() {
         let builder = Builder::new();
+        let mut ctx = InverseContext::new();
         let cache = super::map_reverse(
             &builder,
             vec![(1u8, 2usize), (2u8, 3usize), (1u8, 4usize)],
-            1,
-            |token, inputs, (key, value)| {
-                let (token, matches) = token.eql(inputs[0], [*key]);
+            &Inverse::fake(&mut ctx, &0u8).unwrap(),
+            |token, needle, (key, value)| {
+                let (token, matches) = token.eql(needle, key);
                 let count = if matches { *value } else { 0 };
                 (token, Counter { count })
             },
