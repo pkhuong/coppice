@@ -4,23 +4,23 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::Value;
+use crate::Aggregate;
 
 #[derive(Debug)]
-pub struct Split<T: Value> {
+pub struct Split<T: Aggregate> {
     input_id: u8,
     index: u32,
     arcs: [Node<T>; 2],
 }
 
 #[derive(Debug)]
-pub enum Node<T: Value> {
+pub enum Node<T: Aggregate> {
     Default,
     Leaf(Arc<T>),
     Split(Arc<Split<T>>),
 }
 
-impl<T: Value> Clone for Node<T> {
+impl<T: Aggregate> Clone for Node<T> {
     fn clone(&self) -> Node<T> {
         match self {
             Node::Default => Node::Default,
@@ -33,12 +33,12 @@ impl<T: Value> Clone for Node<T> {
 type SplitKey = (u8, u32, usize, usize);
 
 #[derive(Debug, Default)]
-pub struct Builder<T: Value> {
+pub struct Builder<T: Aggregate> {
     leaf_cache: Mutex<HashSet<Arc<T>>>,
     split_cache: Mutex<HashMap<SplitKey, Arc<Split<T>>>>,
 }
 
-impl<T: Value> Node<T> {
+impl<T: Aggregate> Node<T> {
     fn as_usize(&self) -> usize {
         match self {
             Node::Default => 0,
@@ -67,11 +67,7 @@ impl<T: Value> Node<T> {
     }
 }
 
-impl<T: Value> Builder<T> {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
+impl<T: Aggregate> Builder<T> {
     pub fn make_empty(&self) -> Node<T> {
         Node::Default
     }

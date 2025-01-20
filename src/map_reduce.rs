@@ -8,18 +8,18 @@ use quinine::MonoBox;
 use crate::bad_trie;
 use crate::reverser::InverseContext;
 use crate::reverser::SearchToken;
+use crate::Aggregate;
 use crate::JoinKeys;
-use crate::Value;
 
 // Box and a worker lock.
 type NodeCell<T> = Arc<(MonoBox<bad_trie::Node<T>>, Mutex<()>)>;
 
-struct SummaryCache<Tablet: std::hash::Hash + Eq, Summary: Value> {
+struct SummaryCache<Tablet: std::hash::Hash + Eq, Summary: Aggregate> {
     builder: Arc<bad_trie::Builder<Summary>>,
     inverted_summaries: Mutex<HashMap<Tablet, NodeCell<Summary>>>,
 }
 
-impl<Tablet: std::hash::Hash + Eq, Summary: Value> SummaryCache<Tablet, Summary> {
+impl<Tablet: std::hash::Hash + Eq, Summary: Aggregate> SummaryCache<Tablet, Summary> {
     pub fn new() -> Self {
         SummaryCache {
             builder: Default::default(),
@@ -43,7 +43,7 @@ static SUMMARY_CACHES: std::sync::LazyLock<
     Mutex<HashMap<ShapeKey, Arc<dyn std::any::Any + Sync + Send>>>,
 > = std::sync::LazyLock::new(Default::default);
 
-pub fn clear_all_summary_caches() {
+pub fn clear_all_caches() {
     SUMMARY_CACHES.lock().unwrap().clear();
 }
 
@@ -55,7 +55,7 @@ fn ensure_populated_cells<Summary, Tablet, Params, Row, Rows, JoinKeys, RowFn, W
     worker: &WorkerFn,
 ) -> Result<Vec<NodeCell<Summary>>, &'static str>
 where
-    Summary: Value + Send + 'static,
+    Summary: Aggregate + Send + 'static,
     Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
     Params: Sync + 'static,
     Row: Send,
@@ -191,7 +191,7 @@ pub fn map_reduce<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn
     worker: WorkerFn,
 ) -> Result<Summary, &'static str>
 where
-    Summary: Value + Send + 'static,
+    Summary: Aggregate + Send + 'static,
     Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
     Params: Sync + 'static,
     Row: Send,
@@ -246,7 +246,7 @@ mod test {
         }
     }
 
-    impl Value for Counter {}
+    impl Aggregate for Counter {}
 
     static LOAD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

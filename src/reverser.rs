@@ -3,8 +3,8 @@ use std::collections::HashMap;
 
 use crate::bad_trie::Builder;
 use crate::bad_trie::Node;
+use crate::Aggregate;
 use crate::BaseJoinKey;
-use crate::Value;
 
 #[derive(Debug)]
 pub struct Inverse<'tag, T: BaseJoinKey>(u8, std::marker::PhantomData<fn(&'tag T) -> &'tag T>); // Invariant over 'tag
@@ -136,7 +136,7 @@ impl SearchState {
     }
 }
 
-pub fn reverse_function<T: Value, JK>(
+pub fn reverse_function<T: Aggregate, JK>(
     builder: &Builder<T>,
     join_keys: &JK,
     worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK) -> (SearchToken<'static, 'b>, T),
@@ -165,7 +165,7 @@ pub fn reverse_function<T: Value, JK>(
     Ok(acc)
 }
 
-pub fn map_reverse<T: Value + Send, Row: Send, JK: Sync>(
+pub fn map_reverse<T: Aggregate + Send, Row: Send, JK: Sync>(
     builder: &Builder<T>,
     items: impl rayon::iter::IntoParallelIterator<Item = Row>,
     join_keys: &JK,
@@ -175,7 +175,7 @@ pub fn map_reverse<T: Value + Send, Row: Send, JK: Sync>(
 ) -> Result<Node<T>, &'static str> {
     use rayon::iter::ParallelIterator;
 
-    let identity = || Ok(builder.make_empty());
+    let identity = || builder.make_empty();
 
     items
         .into_par_iter()
@@ -184,7 +184,7 @@ pub fn map_reverse<T: Value + Send, Row: Send, JK: Sync>(
                 worker(token, inputs, &row)
             })
         })
-        .reduce(identity, |x, y| builder.merge(x?, y?))
+        .try_reduce(identity, |x, y| builder.merge(x, y))
 }
 
 #[cfg(test)]
@@ -193,7 +193,7 @@ mod test {
     use super::SearchToken;
     use crate::bad_trie::Builder;
     use crate::bad_trie::Node;
-    use crate::Value;
+    use crate::Aggregate;
 
     #[derive(Hash, PartialEq, Eq, Default, Clone, Debug)]
     struct Counter {
@@ -206,11 +206,11 @@ mod test {
         }
     }
 
-    impl Value for Counter {}
+    impl Aggregate for Counter {}
 
     #[test]
     fn test_reverse_smoke() {
-        let builder = Builder::new();
+        let builder: Builder<_> = Default::default();
         let mut ctx = InverseContext::new();
         let cache = super::reverse_function(
             &builder,
@@ -253,7 +253,7 @@ mod test {
 
     #[test]
     fn test_reverse_simplify_zero() {
-        let builder = Builder::new();
+        let builder: Builder<_> = Default::default();
         let mut ctx = InverseContext::new();
         let cache = super::reverse_function(
             &builder,
@@ -273,7 +273,7 @@ mod test {
 
     #[test]
     fn test_reverse_simplify_equal() {
-        let builder = Builder::new();
+        let builder: Builder<_> = Default::default();
         let mut ctx = InverseContext::new();
         let cache = super::reverse_function(
             &builder,
@@ -297,7 +297,7 @@ mod test {
 
     #[test]
     fn test_map_reverse() {
-        let builder = Builder::new();
+        let builder: Builder<_> = Default::default();
         let mut ctx = InverseContext::new();
         let cache = super::map_reverse(
             &builder,

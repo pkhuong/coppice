@@ -1,13 +1,14 @@
-pub mod bad_trie;
-pub mod map_reduce;
-pub mod reverser;
+mod bad_trie;
+mod map_reduce;
+mod reverser;
 
 use reverser::Inverse;
 use reverser::InverseContext;
 
+pub use map_reduce::clear_all_caches;
 pub use map_reduce::map_reduce;
 
-pub trait Value:
+pub trait Aggregate:
     merge::Merge + std::hash::Hash + PartialEq + Eq + Default + Sync + Clone + std::fmt::Debug
 {
     fn is_default(&self) -> bool {
