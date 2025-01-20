@@ -8,20 +8,42 @@ use reverser::InverseContext;
 pub use map_reduce::clear_all_caches;
 pub use map_reduce::map_reduce;
 
+/// Coppice caches results from aggregate queries where the query results
+/// implement the [`Aggregate`] trait.
+///
+/// The [`merge::Merge`] trait must implement a commutative and associative
+/// (abelian group) operator (e.g., sum for a counter, mininum or maximum for
+/// watermarks).  We also assume that the default value is the identify (i.e.,
+/// merging the default value with anything is a no-op).
+///
+///
+/// There's a lot of requirements on that trait, but it's hard to see how to do
+/// without most of them. We need:
+///
+/// - [`std::hash::Hash`] / [`PartialEq`] / [`Eq`] for hash consing
+/// - [`Default`] to present a consistent interface when merging the empty set
+/// - [`merge::Merge`] isn't mandatory, but it's nice to benefit from the derive macro
+/// - [`Clone`] is needed because [`merge::Merge::merge`] consumes the "other" value
+/// - [`Sync`] for parallelism
 pub trait Aggregate:
-    merge::Merge + std::hash::Hash + PartialEq + Eq + Default + Sync + Clone + std::fmt::Debug
+    merge::Merge + std::hash::Hash + PartialEq + Eq + Default + Sync + Clone
 {
     fn is_default(&self) -> bool {
         self == &Default::default()
     }
 }
 
+/// Individual join keys (that are run "in reverse") must be convertible to byte
+/// arrays (bit vectors really, but byte arrays are convenient).
 pub trait BaseJoinKey {
     type Ret: AsRef<[u8]>;
 
     fn to_bytes(&self) -> Self::Ret;
 }
 
+/// In practice, join keys are usually passed around as tuples or arrays, and
+/// must be convertible to a.  The [`JoinKeys`] trait captures the containers of
+/// [`BaseJoinKey`]s we know how to convert to function inversion input.
 pub trait JoinKeys {
     type Ret<'a>: Sync;
 
@@ -56,6 +78,50 @@ where
     type Ret<'a> = (T0::Ret<'a>, T1::Ret<'a>);
     fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
         Ok((self.0.invert(ctx)?, self.1.invert(ctx)?))
+    }
+}
+
+impl<T0: JoinKeys, T1: JoinKeys, T2: JoinKeys> JoinKeys for (T0, T1, T2) {
+    type Ret<'a> = (T0::Ret<'a>, T1::Ret<'a>, T2::Ret<'a>);
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        Ok((
+            self.0.invert(ctx)?,
+            self.1.invert(ctx)?,
+            self.2.invert(ctx)?,
+        ))
+    }
+}
+
+impl<T0: JoinKeys, T1: JoinKeys, T2: JoinKeys, T3: JoinKeys> JoinKeys for (T0, T1, T2, T3) {
+    type Ret<'a> = (T0::Ret<'a>, T1::Ret<'a>, T2::Ret<'a>, T3::Ret<'a>);
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        Ok((
+            self.0.invert(ctx)?,
+            self.1.invert(ctx)?,
+            self.2.invert(ctx)?,
+            self.3.invert(ctx)?,
+        ))
+    }
+}
+
+impl<T0: JoinKeys, T1: JoinKeys, T2: JoinKeys, T3: JoinKeys, T4: JoinKeys> JoinKeys
+    for (T0, T1, T2, T3, T4)
+{
+    type Ret<'a> = (
+        T0::Ret<'a>,
+        T1::Ret<'a>,
+        T2::Ret<'a>,
+        T3::Ret<'a>,
+        T4::Ret<'a>,
+    );
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        Ok((
+            self.0.invert(ctx)?,
+            self.1.invert(ctx)?,
+            self.2.invert(ctx)?,
+            self.3.invert(ctx)?,
+            self.4.invert(ctx)?,
+        ))
     }
 }
 

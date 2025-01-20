@@ -14,12 +14,18 @@ use crate::JoinKeys;
 // Box and a worker lock.
 type NodeCell<T> = Arc<(MonoBox<bad_trie::Node<T>>, Mutex<()>)>;
 
-struct SummaryCache<Tablet: std::hash::Hash + Eq, Summary: Aggregate> {
+struct SummaryCache<
+    Tablet: std::hash::Hash + Eq,
+    Params: std::hash::Hash + Eq + Clone,
+    Summary: Aggregate,
+> {
     builder: Arc<bad_trie::Builder<Summary>>,
-    inverted_summaries: Mutex<HashMap<Tablet, NodeCell<Summary>>>,
+    inverted_summaries: Mutex<HashMap<(Tablet, Params), NodeCell<Summary>>>,
 }
 
-impl<Tablet: std::hash::Hash + Eq, Summary: Aggregate> SummaryCache<Tablet, Summary> {
+impl<Tablet: std::hash::Hash + Eq, Params: std::hash::Hash + Eq + Clone, Summary: Aggregate>
+    SummaryCache<Tablet, Params, Summary>
+{
     pub fn new() -> Self {
         SummaryCache {
             builder: Default::default(),
@@ -27,11 +33,11 @@ impl<Tablet: std::hash::Hash + Eq, Summary: Aggregate> SummaryCache<Tablet, Summ
         }
     }
 
-    pub fn get_all_cells(&self, keys: Vec<Tablet>) -> Vec<NodeCell<Summary>> {
+    pub fn get_all_cells(&self, keys: Vec<Tablet>, params: &Params) -> Vec<NodeCell<Summary>> {
         let mut tablets = self.inverted_summaries.lock().unwrap();
 
         keys.into_iter()
-            .map(|tablet| tablets.entry(tablet).or_default().clone())
+            .map(|tablet| tablets.entry((tablet, params.clone())).or_default().clone())
             .collect::<Vec<_>>()
     }
 }
@@ -43,6 +49,7 @@ static SUMMARY_CACHES: std::sync::LazyLock<
     Mutex<HashMap<ShapeKey, Arc<dyn std::any::Any + Sync + Send>>>,
 > = std::sync::LazyLock::new(Default::default);
 
+/// Clears *all* query caches for [`map_reduce`] calls in the current process.
 pub fn clear_all_caches() {
     SUMMARY_CACHES.lock().unwrap().clear();
 }
@@ -57,7 +64,7 @@ fn ensure_populated_cells<Summary, Tablet, Params, Row, Rows, JoinKeys, RowFn, W
 where
     Summary: Aggregate + Send + 'static,
     Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
-    Params: Sync + 'static,
+    Params: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
     Row: Send,
     Rows: rayon::iter::IntoParallelIterator<Item = Row>,
     JoinKeys: Sync + 'static,
@@ -85,14 +92,14 @@ where
         .lock()
         .unwrap()
         .entry(shape_key)
-        .or_insert_with(|| Arc::new(SummaryCache::<Tablet, Summary>::new()))
+        .or_insert_with(|| Arc::new(SummaryCache::<Tablet, Params, Summary>::new()))
         .clone();
 
     let summary_cache = summary_cache
-        .downcast_ref::<SummaryCache<Tablet, Summary>>()
+        .downcast_ref::<SummaryCache<Tablet, Params, Summary>>()
         .expect("types are part of the shape key");
 
-    let node_cells: Vec<NodeCell<Summary>> = summary_cache.get_all_cells(tablets.to_vec());
+    let node_cells: Vec<NodeCell<Summary>> = summary_cache.get_all_cells(tablets.to_vec(), params);
     let builder = &summary_cache.builder;
     let err: Mutex<Option<&'static str>> = Default::default();
 
@@ -183,6 +190,31 @@ where
     }
 }
 
+/// The [`map_reduce`] generic function takes a list of tablets
+/// (fractional data sets), converts each to a parallel iterator of
+/// rows with the `row_fn`, and merges the result of executing
+/// `worker` with the `params` and `join_keys` on each `row` in all
+/// the `tablets`.
+///
+/// In other words, each call to the [`map_reduce`] function implements
+/// `tablets.flat_map(row_fn).map(|row| worker(params, join_keys, row)).reduce(|x, y| x.merge(y))`
+/// The complexity stems from the fact that `map_reduce` internally caches
+/// the results so as to avoid rescanning the tablets when only the `join_keys`
+/// differ.
+///
+/// The difference between `params` and `join_keys` is that the
+/// `params` piped through like opaque values to `worker`, and are
+/// used only as cache keys.
+///
+/// The `join_keys`, on the other hand, are kept hidden from `worker`
+/// when building the cache: the cache construction process computes
+/// all possible values for the `join_keys` that could yield a
+/// non-default [`Aggregate`].
+///
+/// For this function inversion process to work correctly, the `row_fn`
+/// and `worker` functions must be pure functions.  The caching logic
+/// also assumes these functions are fully described by their types,
+/// so the `row_fn` and `worker` functions must also be closures.
 pub fn map_reduce<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn>(
     tablets: &[Tablet],
     params: Params,
@@ -193,7 +225,7 @@ pub fn map_reduce<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn
 where
     Summary: Aggregate + Send + 'static,
     Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
-    Params: Sync + 'static,
+    Params: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
     Row: Send,
     Rows: rayon::iter::IntoParallelIterator<Item = Row>,
     JoinKeysT: JoinKeys + 'static,
@@ -280,43 +312,63 @@ mod test {
 
     use rusty_fork::rusty_fork_test;
     rusty_fork_test! {
-        #[test]
-        fn test_agg_smoke() {
-            LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+            #[test]
+            fn test_map_reduce_smoke() {
+                LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
 
-            assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+                assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
 
-            assert_eq!(dummy(&["bar".to_owned()], 1).unwrap(), Counter { count: 60 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+                assert_eq!(dummy(&["bar".to_owned()], 1).unwrap(), Counter { count: 60 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
 
-            assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 1).unwrap(), Counter { count: 66 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+                assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 1).unwrap(), Counter { count: 66 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
 
-            assert_eq!(dummy(&["foo".to_owned(), "foo".to_owned()], 1).unwrap(), Counter { count: 12 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+                assert_eq!(dummy(&["foo".to_owned(), "foo".to_owned()], 1).unwrap(), Counter { count: 12 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
 
-            assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 11).unwrap(), Counter { count: 42 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+                assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 11).unwrap(), Counter { count: 42 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
 
-            assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 2).unwrap(), Counter { count: 33 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
-        }
+                assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 2).unwrap(), Counter { count: 33 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            }
 
-        #[test]
-        fn test_agg_join_keys() {
-            // Test that we get the correct result for each join
-            // keys... and that we scan the data set only once.
-            LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+            #[test]
+            fn test_map_reduce_join_keys() {
+                // Test that we get the correct result for each join
+                // keys... and that we scan the data set only once.
+                LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
 
-            assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+                assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
 
-            assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+                assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
 
-            assert_eq!(dummy(&["foo".to_owned()], 2).unwrap(), Counter { count: 3 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
-        }
+                assert_eq!(dummy(&["foo".to_owned()], 2).unwrap(), Counter { count: 3 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+            }
+
+            #[test]
+            fn test_map_reduce_clear() {
+                LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+
+                // Cache works
+                assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+                assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+                clear_all_caches();
+
+                // Must repopulate cache
+                assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+                assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
+                assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+
     }
+        }
 }
