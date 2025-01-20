@@ -1,0 +1,10 @@
+[package]
+name = "coppice"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fingerprint-struct = "0.1"
+merge = "0.1"
+rayon = "1"
+umash = "0.6"
