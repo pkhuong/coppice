@@ -22,7 +22,7 @@ pub trait JoinKey {
 pub trait JoinKeys {
     type Ret<'a>: Sync;
 
-    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a>;
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str>;
 }
 
 impl<T> JoinKeys for T
@@ -30,39 +30,51 @@ where
     T: JoinKey + 'static,
 {
     type Ret<'a> = Inverse<'a, T>;
-    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
-        ctx.fake(self).unwrap()
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        ctx.fake(self)
     }
 }
 
 impl<T> JoinKeys for (T,)
 where
-    T: JoinKey + 'static,
+    T: JoinKeys,
 {
-    type Ret<'a> = (Inverse<'a, T>,);
-    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
-        (ctx.fake(&self.0).unwrap(),)
+    type Ret<'a> = (T::Ret<'a>,);
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        Ok((self.0.invert(ctx)?,))
     }
 }
 
 impl<T0, T1> JoinKeys for (T0, T1)
 where
-    T0: JoinKey + 'static,
-    T1: JoinKey + 'static,
+    T0: JoinKeys,
+    T1: JoinKeys,
 {
-    type Ret<'a> = (Inverse<'a, T0>, Inverse<'a, T1>);
-    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
-        (ctx.fake(&self.0).unwrap(), ctx.fake(&self.1).unwrap())
+    type Ret<'a> = (T0::Ret<'a>, T1::Ret<'a>);
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        Ok((self.0.invert(ctx)?, self.1.invert(ctx)?))
     }
 }
 
 impl<T, const COUNT: usize> JoinKeys for [T; COUNT]
 where
-    T: JoinKey + 'static,
+    T: JoinKeys,
 {
-    type Ret<'a> = [Inverse<'a, T>; COUNT];
-    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
-        self.each_ref().map(|x| ctx.fake(x).unwrap())
+    type Ret<'a> = [T::Ret<'a>; COUNT];
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        let mut err: Option<&'static str> = None;
+        let ret = self.each_ref().map(|x| match x.invert(ctx) {
+            Ok(inv) => Some(inv),
+            Err(e) => {
+                err = Some(e);
+                None
+            }
+        });
+
+        match err {
+            Some(e) => Err(e),
+            None => Ok(ret.map(|x| x.unwrap())),
+        }
     }
 }
 

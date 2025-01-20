@@ -39,7 +39,7 @@ where
     use std::collections::hash_map::Entry;
 
     let mut ctx = InverseContext::<'static>::new();
-    let join_keys = join_keys.invert(&mut ctx);
+    let join_keys = join_keys.invert(&mut ctx)?;
 
     let mut caches: Index<Tablet, Summary> = Index {
         inverted_tablets: Default::default(),
