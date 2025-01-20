@@ -1,9 +1,11 @@
 pub mod bad_trie;
-pub mod index;
+pub mod map_reduce;
 pub mod reverser;
 
 use reverser::Inverse;
 use reverser::InverseContext;
+
+pub use map_reduce::map_reduce;
 
 pub trait Value:
     merge::Merge + std::hash::Hash + PartialEq + Eq + Default + Sync + Clone + std::fmt::Debug

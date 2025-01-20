@@ -14,21 +14,21 @@ use crate::Value;
 // Box and a worker lock.
 type NodeCell<T> = Arc<(MonoBox<bad_trie::Node<T>>, Mutex<()>)>;
 
-struct IndexedTable<Tablet: std::hash::Hash + Eq, Summary: Value> {
+struct SummaryCache<Tablet: std::hash::Hash + Eq, Summary: Value> {
     builder: Arc<bad_trie::Builder<Summary>>,
-    inverted_tablets: Mutex<HashMap<Tablet, NodeCell<Summary>>>,
+    inverted_summaries: Mutex<HashMap<Tablet, NodeCell<Summary>>>,
 }
 
-impl<Tablet: std::hash::Hash + Eq, Summary: Value> IndexedTable<Tablet, Summary> {
-    pub fn new() -> Result<Self, rayon::ThreadPoolBuildError> {
-        Ok(IndexedTable {
+impl<Tablet: std::hash::Hash + Eq, Summary: Value> SummaryCache<Tablet, Summary> {
+    pub fn new() -> Self {
+        SummaryCache {
             builder: Default::default(),
-            inverted_tablets: Mutex::new(Default::default()),
-        })
+            inverted_summaries: Mutex::new(Default::default()),
+        }
     }
 
     pub fn get_all_cells(&self, keys: Vec<Tablet>) -> Vec<NodeCell<Summary>> {
-        let mut tablets = self.inverted_tablets.lock().unwrap();
+        let mut tablets = self.inverted_summaries.lock().unwrap();
 
         keys.into_iter()
             .map(|tablet| tablets.entry(tablet).or_default().clone())
@@ -36,8 +36,18 @@ impl<Tablet: std::hash::Hash + Eq, Summary: Value> IndexedTable<Tablet, Summary>
     }
 }
 
+// Summary, Tablet, Params, JoinKeys, RowFn, WorkerFn
+type ShapeKey = [std::any::TypeId; 6];
+
+static SUMMARY_CACHES: std::sync::LazyLock<
+    Mutex<HashMap<ShapeKey, Arc<dyn std::any::Any + Sync + Send>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub fn clear_all_summary_caches() {
+    SUMMARY_CACHES.lock().unwrap().clear();
+}
+
 fn ensure_populated_cells<Summary, Tablet, Params, Row, Rows, JoinKeys, RowFn, WorkerFn>(
-    indexed_table: &IndexedTable<Tablet, Summary>,
     tablets: &[Tablet],
     params: &Params,
     join_keys: &JoinKeys,
@@ -45,22 +55,45 @@ fn ensure_populated_cells<Summary, Tablet, Params, Row, Rows, JoinKeys, RowFn, W
     worker: &WorkerFn,
 ) -> Result<Vec<NodeCell<Summary>>, &'static str>
 where
-    Summary: Value + Send,
-    Tablet: std::hash::Hash + Eq + Clone + Sync + Send,
-    Params: Sync,
+    Summary: Value + Send + 'static,
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Params: Sync + 'static,
     Row: Send,
     Rows: rayon::iter::IntoParallelIterator<Item = Row>,
-    JoinKeys: Sync,
-    RowFn: Fn(&Tablet) -> Result<Rows, &'static str> + Sync,
+    JoinKeys: Sync + 'static,
+    RowFn: Fn(&Tablet) -> Result<Rows, &'static str> + Sync + 'static,
     WorkerFn: for<'b> Fn(
             SearchToken<'static, 'b>,
             &Params,
             &JoinKeys,
             &Row,
         ) -> (SearchToken<'static, 'b>, Summary)
-        + Sync,
+        + Sync
+        + 'static,
 {
-    let node_cells: Vec<NodeCell<Summary>> = indexed_table.get_all_cells(tablets.to_vec());
+    use std::any::TypeId;
+
+    let shape_key: ShapeKey = [
+        TypeId::of::<Summary>(),
+        TypeId::of::<Tablet>(),
+        TypeId::of::<Params>(),
+        TypeId::of::<JoinKeys>(),
+        TypeId::of::<RowFn>(),
+        TypeId::of::<WorkerFn>(),
+    ];
+    let summary_cache = SUMMARY_CACHES
+        .lock()
+        .unwrap()
+        .entry(shape_key)
+        .or_insert_with(|| Arc::new(SummaryCache::<Tablet, Summary>::new()))
+        .clone();
+
+    let summary_cache = summary_cache
+        .downcast_ref::<SummaryCache<Tablet, Summary>>()
+        .expect("types are part of the shape key");
+
+    let node_cells: Vec<NodeCell<Summary>> = summary_cache.get_all_cells(tablets.to_vec());
+    let builder = &summary_cache.builder;
     let err: Mutex<Option<&'static str>> = Default::default();
 
     rayon::in_place_scope_fifo(|scope| {
@@ -102,9 +135,9 @@ where
                     };
 
                     let result = crate::reverser::map_reverse(
-                        &indexed_table.builder,
+                        builder,
                         rows,
-                        &join_keys,
+                        join_keys,
                         |token, join_keys, row| worker(token, params, join_keys, row),
                     );
 
@@ -150,7 +183,7 @@ where
     }
 }
 
-pub fn aggregate<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn>(
+pub fn map_reduce<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn>(
     tablets: &[Tablet],
     params: Params,
     join_keys: JoinKeysT,
@@ -158,35 +191,33 @@ pub fn aggregate<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn>
     worker: WorkerFn,
 ) -> Result<Summary, &'static str>
 where
-    Summary: Value + Send,
-    Tablet: std::hash::Hash + Eq + Clone + Sync + Send,
-    Params: Sync,
+    Summary: Value + Send + 'static,
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Params: Sync + 'static,
     Row: Send,
     Rows: rayon::iter::IntoParallelIterator<Item = Row>,
-    JoinKeysT: JoinKeys,
-    RowFn: Fn(&Tablet) -> Result<Rows, &'static str> + Sync,
+    JoinKeysT: JoinKeys + 'static,
+    RowFn: Fn(&Tablet) -> Result<Rows, &'static str> + Sync + 'static,
     WorkerFn: for<'a, 'b> Fn(
             SearchToken<'a, 'b>,
             &Params,
             &JoinKeysT::Ret<'a>,
             &Row,
         ) -> (SearchToken<'a, 'b>, Summary)
-        + Sync,
+        + Sync
+        + 'static,
 {
     let mut ctx = InverseContext::<'static>::new();
     let join_keys = join_keys.invert(&mut ctx)?;
 
-    let index: IndexedTable<Tablet, Summary> = IndexedTable::new().unwrap();
-
-    let node_cells =
-        ensure_populated_cells(&index, tablets, &params, &join_keys, &row_fn, &worker)?;
+    let node_cells = ensure_populated_cells(tablets, &params, &join_keys, &row_fn, &worker)?;
     let lookup_keys = ctx.keys();
     let mut acc: Option<Summary> = None;
     for node_cell in node_cells {
         if let Some(value) = node_cell
             .0
             .as_ref()
-            .expect("already forced")
+            .expect("already forced by ensure_populated_cells")
             .lookup(&lookup_keys)?
         {
             let value = (*value).clone();
@@ -217,13 +248,27 @@ mod test {
 
     impl Value for Counter {}
 
-    #[test]
-    fn test_agg() {
-        let value = aggregate(
-            &["foo"],
+    static LOAD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn dummy(tablets: &[String], join_key: u8) -> Result<Counter, &'static str> {
+        map_reduce(
+            tablets,
             ("test",),
-            1u8,
-            |_foo| Ok(vec![(1u8, 2usize), (2u8, 3usize), (1u8, 4usize)]),
+            join_key,
+            |tablet| {
+                LOAD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                if tablet == "foo" {
+                    Ok(vec![(1u8, 2usize), (2u8, 3usize), (1u8, 4usize)])
+                } else {
+                    Ok(vec![
+                        (1u8, 20usize),
+                        (2u8, 30usize),
+                        (1u8, 40usize),
+                        (11u8, 42usize),
+                    ])
+                }
+            },
             |token, params, needle, (key, value)| {
                 assert_eq!(*params, ("test",));
                 let (token, matches) = token.eql(needle, key);
@@ -231,8 +276,47 @@ mod test {
                 (token, Counter { count })
             },
         )
-        .unwrap();
+    }
 
-        assert_eq!(value, Counter { count: 6 });
+    use rusty_fork::rusty_fork_test;
+    rusty_fork_test! {
+        #[test]
+        fn test_agg_smoke() {
+            LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+
+            assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+            assert_eq!(dummy(&["bar".to_owned()], 1).unwrap(), Counter { count: 60 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+            assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 1).unwrap(), Counter { count: 66 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+            assert_eq!(dummy(&["foo".to_owned(), "foo".to_owned()], 1).unwrap(), Counter { count: 12 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+            assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 11).unwrap(), Counter { count: 42 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+            assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 2).unwrap(), Counter { count: 33 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+        }
+
+        #[test]
+        fn test_agg_join_keys() {
+            // Test that we get the correct result for each join
+            // keys... and that we scan the data set only once.
+            LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+
+            assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+            assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+            assert_eq!(dummy(&["foo".to_owned()], 2).unwrap(), Counter { count: 3 });
+            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+        }
     }
 }
