@@ -1,3 +1,44 @@
+//! Coppice is a dynamic programming library for acyclic analytical
+//! queries expressed as nested map/reduce computations.  These
+//! map/reduce computations are automatically cached and parallelised
+//! when executed with the [`map_reduce()`] higher-order function.
+//!
+//! Of course, since we know we're only interested in full blown
+//! [`map_reduce()`] results, we actually memoise fully aggregated
+//! results for each "tablet" (small set of rows) and opaque `params`.
+//!
+//! In addition to these standard inputs (and cache keys), Coppice
+//! also passes "join keys" to the "map" functions.  This third type
+//! of inputs (in addition to rows and opaque `params`) enables
+//! Coppice to offer asymptotically superior performance compared to
+//! pure memoisation: [`map_reduce()`] essentially executes "map"
+//! functions "in reverse," for join keys.
+//!
+//! The [`map_reduce()`] function thus ends up evaluating the "map"
+//! function for each row and `params`, but extracts all join keys
+//! that, combined with the row and `params`, yields a non-trivial
+//! [`Aggregate`].  We thus extract, for each row and `params`,
+//! a branching function from join keys to [`Aggregate`], and reduce
+//! ([`merge::Merge`]) these branching functions together for
+//! all rows in a tablet.
+//!
+//! Two key insights underlie Coppice.
+//!
+//! The first is that backtracking search over join keys represented
+//! as bounded arrays of bits gives us enough finite domain powers to
+//! weakly emulate logic programming.  That's not a lot, but enough to
+//! automatically build a bit-trie index from an opaque function.
+//!
+//! The second is that many analytical queries use only
+//! [hierarchical joins](https://arxiv.org/abs/2201.05129) (a well known fact),
+//! and that writing these queries as regular code implicitly gives us
+//! the tree necessary for [Yannakakis's algorithm](https://en.wikipedia.org/wiki/Yannakakis_algorithm)
+//! (maybe less well known).
+//!
+//! In short, the Coppice is just an API trick to coerce Rust covers
+//! into writing plain code that can be executed with a version of
+//! Yannakakis's algorithm simplified for the hierarchical subset of
+//! acyclic queries.
 mod bad_trie;
 mod map_reduce;
 mod reverser;
@@ -57,6 +98,13 @@ where
     type Ret<'a> = Inverse<'a, T>;
     fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
         ctx.fake(self)
+    }
+}
+
+impl JoinKeys for () {
+    type Ret<'a> = ();
+    fn invert<'a>(&self, _ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
+        Ok(())
     }
 }
 
