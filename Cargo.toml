@@ -2,6 +2,8 @@
 name = "coppice"
 version = "0.1.0"
 edition = "2021"
+description = "Dynamic programming library for acyclic analytical queries"
+license = "MIT"
 
 [dependencies]
 merge = "0.1"
