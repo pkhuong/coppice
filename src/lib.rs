@@ -13,7 +13,7 @@ pub trait Value:
     }
 }
 
-pub trait JoinKey {
+pub trait BaseJoinKey {
     type Ret: AsRef<[u8]>;
 
     fn to_bytes(&self) -> Self::Ret;
@@ -27,7 +27,7 @@ pub trait JoinKeys {
 
 impl<T> JoinKeys for T
 where
-    T: JoinKey + 'static,
+    T: BaseJoinKey + 'static,
 {
     type Ret<'a> = Inverse<'a, T>;
     fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
@@ -78,7 +78,7 @@ where
     }
 }
 
-impl JoinKey for u8 {
+impl BaseJoinKey for u8 {
     type Ret = [u8; 1];
 
     fn to_bytes(&self) -> Self::Ret {
@@ -86,7 +86,7 @@ impl JoinKey for u8 {
     }
 }
 
-impl JoinKey for u16 {
+impl BaseJoinKey for u16 {
     type Ret = [u8; 2];
 
     fn to_bytes(&self) -> Self::Ret {
@@ -94,7 +94,7 @@ impl JoinKey for u16 {
     }
 }
 
-impl JoinKey for u32 {
+impl BaseJoinKey for u32 {
     type Ret = [u8; 4];
 
     fn to_bytes(&self) -> Self::Ret {
@@ -102,7 +102,7 @@ impl JoinKey for u32 {
     }
 }
 
-impl JoinKey for u64 {
+impl BaseJoinKey for u64 {
     type Ret = [u8; 8];
 
     fn to_bytes(&self) -> Self::Ret {
@@ -110,7 +110,7 @@ impl JoinKey for u64 {
     }
 }
 
-impl JoinKey for u128 {
+impl BaseJoinKey for u128 {
     type Ret = [u8; 16];
 
     fn to_bytes(&self) -> Self::Ret {
@@ -121,7 +121,7 @@ impl JoinKey for u128 {
 static STRING_PARAMS: std::sync::LazyLock<umash::Params> =
     std::sync::LazyLock::new(Default::default);
 
-impl JoinKey for &str {
+impl BaseJoinKey for &str {
     type Ret = [u8; 16];
 
     fn to_bytes(&self) -> Self::Ret {

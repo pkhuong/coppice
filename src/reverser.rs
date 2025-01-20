@@ -3,11 +3,11 @@ use std::collections::HashMap;
 
 use crate::bad_trie::Builder;
 use crate::bad_trie::Node;
-use crate::JoinKey;
+use crate::BaseJoinKey;
 use crate::Value;
 
 #[derive(Debug)]
-pub struct Inverse<'tag, T: JoinKey>(u8, std::marker::PhantomData<fn(&'tag T) -> &'tag T>); // Invariant over 'tag
+pub struct Inverse<'tag, T: BaseJoinKey>(u8, std::marker::PhantomData<fn(&'tag T) -> &'tag T>); // Invariant over 'tag
 
 #[derive(Debug, Default)]
 pub struct InverseContext<'tag> {
@@ -20,7 +20,7 @@ impl<'tag> InverseContext<'tag> {
         Default::default()
     }
 
-    pub fn fake<T: JoinKey>(&mut self, value: &T) -> Result<Inverse<'tag, T>, &'static str> {
+    pub fn fake<T: BaseJoinKey>(&mut self, value: &T) -> Result<Inverse<'tag, T>, &'static str> {
         if self.values.len() > u8::MAX as usize {
             return Err("too many join keys for context");
         }
@@ -42,14 +42,14 @@ pub struct SearchToken<'tag, 'a> {
 }
 
 impl<'tag> SearchToken<'tag, '_> {
-    pub fn get<T: JoinKey>(self, input: &Inverse<'tag, T>, index: u32) -> (Self, bool) {
+    pub fn get<T: BaseJoinKey>(self, input: &Inverse<'tag, T>, index: u32) -> (Self, bool) {
         self.state
             .check_mapping(input.0, &input as *const _ as usize);
         let ret = self.state.get(input.0, index);
         (self, ret)
     }
 
-    pub fn eql<T: JoinKey>(self, input: &Inverse<'tag, T>, value: &T) -> (Self, bool) {
+    pub fn eql<T: BaseJoinKey>(self, input: &Inverse<'tag, T>, value: &T) -> (Self, bool) {
         self.state
             .check_mapping(input.0, &input as *const _ as usize);
         let value = value.to_bytes();
