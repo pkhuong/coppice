@@ -2,6 +2,9 @@ pub mod bad_trie;
 pub mod index;
 pub mod reverser;
 
+use reverser::Inverse;
+use reverser::InverseContext;
+
 pub trait Value:
     merge::Merge + std::hash::Hash + PartialEq + Eq + Default + Sync + Clone + std::fmt::Debug
 {
@@ -14,6 +17,53 @@ pub trait JoinKey {
     type Ret: AsRef<[u8]>;
 
     fn to_bytes(&self) -> Self::Ret;
+}
+
+pub trait JoinKeys {
+    type Ret<'a>: Sync;
+
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a>;
+}
+
+impl<T> JoinKeys for T
+where
+    T: JoinKey + 'static,
+{
+    type Ret<'a> = Inverse<'a, T>;
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
+        ctx.fake(self).unwrap()
+    }
+}
+
+impl<T> JoinKeys for (T,)
+where
+    T: JoinKey + 'static,
+{
+    type Ret<'a> = (Inverse<'a, T>,);
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
+        (ctx.fake(&self.0).unwrap(),)
+    }
+}
+
+impl<T0, T1> JoinKeys for (T0, T1)
+where
+    T0: JoinKey + 'static,
+    T1: JoinKey + 'static,
+{
+    type Ret<'a> = (Inverse<'a, T0>, Inverse<'a, T1>);
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
+        (ctx.fake(&self.0).unwrap(), ctx.fake(&self.1).unwrap())
+    }
+}
+
+impl<T, const COUNT: usize> JoinKeys for [T; COUNT]
+where
+    T: JoinKey + 'static,
+{
+    type Ret<'a> = [Inverse<'a, T>; COUNT];
+    fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Self::Ret<'a> {
+        self.each_ref().map(|x| ctx.fake(x).unwrap())
+    }
 }
 
 impl JoinKey for u8 {

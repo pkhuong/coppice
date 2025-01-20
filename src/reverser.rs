@@ -7,36 +7,27 @@ use crate::JoinKey;
 use crate::Value;
 
 #[derive(Debug)]
-pub struct Inverse<'a, T: JoinKey>(u8, std::marker::PhantomData<fn(&'a T) -> &'a T>); // Invariant over 'a
+pub struct Inverse<'tag, T: JoinKey>(u8, std::marker::PhantomData<fn(&'tag T) -> &'tag T>); // Invariant over 'tag
 
 #[derive(Debug, Default)]
-pub struct InverseContext<'a> {
-    counter: usize,
+pub struct InverseContext<'tag> {
     values: Vec<Box<[u8]>>,
-    _invariant: std::marker::PhantomData<fn(&'a ()) -> &'a ()>,
-    _no_send: std::cell::UnsafeCell<()>,
+    _invariant: std::marker::PhantomData<fn(&'tag ()) -> &'tag ()>, // Invariant over 'tag
 }
 
-impl<'a, T: JoinKey> Inverse<'a, T> {
-    fn new(context: &mut InverseContext<'a>) -> Result<Self, &'static str> {
-        let idx = context.counter;
-        if idx > u8::MAX as usize {
+impl<'tag> InverseContext<'tag> {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn fake<T: JoinKey>(&mut self, value: &T) -> Result<Inverse<'tag, T>, &'static str> {
+        if self.values.len() > u8::MAX as usize {
             return Err("too many join keys for context");
         }
 
-        context.counter += 1;
-        Ok(Self(idx as u8, Default::default()))
-    }
-
-    pub fn fake(context: &mut InverseContext<'a>, value: &T) -> Result<Self, &'static str> {
-        context.values.push(Box::from(value.to_bytes().as_ref()));
-        Self::new(context)
-    }
-}
-
-impl InverseContext<'_> {
-    pub fn new() -> Self {
-        Default::default()
+        let idx = self.values.len() as u8;
+        self.values.push(Box::from(value.to_bytes().as_ref()));
+        Ok(Inverse(idx, Default::default()))
     }
 
     pub fn keys(&self) -> Vec<&[u8]> {
@@ -44,21 +35,21 @@ impl InverseContext<'_> {
     }
 }
 
-pub struct SearchToken<'a> {
+pub struct SearchToken<'tag, 'a> {
     state: &'a mut SearchState,
     // Make the lifetime invariant
-    _marker: std::marker::PhantomData<fn(&'a ()) -> &'a ()>,
+    _marker: std::marker::PhantomData<fn(&'tag ()) -> &'tag ()>,
 }
 
-impl SearchToken<'_> {
-    pub fn get<T: JoinKey>(self, input: &Inverse<T>, index: u32) -> (Self, bool) {
+impl<'tag> SearchToken<'tag, '_> {
+    pub fn get<T: JoinKey>(self, input: &Inverse<'tag, T>, index: u32) -> (Self, bool) {
         self.state
             .check_mapping(input.0, &input as *const _ as usize);
         let ret = self.state.get(input.0, index);
         (self, ret)
     }
 
-    pub fn eql<T: JoinKey>(self, input: &Inverse<T>, value: &T) -> (Self, bool) {
+    pub fn eql<T: JoinKey>(self, input: &Inverse<'tag, T>, value: &T) -> (Self, bool) {
         self.state
             .check_mapping(input.0, &input as *const _ as usize);
         let value = value.to_bytes();
@@ -148,7 +139,7 @@ impl SearchState {
 pub fn reverse_function<T: Value, JK>(
     builder: &Builder<T>,
     join_keys: &JK,
-    worker: impl for<'a> Fn(SearchToken<'a>, &JK) -> (SearchToken<'a>, T),
+    worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK) -> (SearchToken<'static, 'b>, T),
 ) -> Result<Node<T>, &'static str> {
     let mut acc = builder.make_empty();
     let mut state = SearchState::new();
@@ -178,7 +169,9 @@ pub fn map_reverse<T: Value + Send, Row: Send, JK: Sync>(
     builder: &Builder<T>,
     items: impl rayon::iter::IntoParallelIterator<Item = Row>,
     join_keys: &JK,
-    worker: impl for<'a> Fn(SearchToken<'a>, &JK, &Row) -> (SearchToken<'a>, T) + Sync + Send,
+    worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK, &Row) -> (SearchToken<'static, 'b>, T)
+        + Sync
+        + Send,
 ) -> Result<Node<T>, &'static str> {
     use rayon::iter::ParallelIterator;
 
@@ -196,7 +189,6 @@ pub fn map_reverse<T: Value + Send, Row: Send, JK: Sync>(
 
 #[cfg(test)]
 mod test {
-    use super::Inverse;
     use super::InverseContext;
     use super::SearchToken;
     use crate::bad_trie::Builder;
@@ -222,11 +214,8 @@ mod test {
         let mut ctx = InverseContext::new();
         let cache = super::reverse_function(
             &builder,
-            &[
-                Inverse::fake(&mut ctx, &0u8).unwrap(),
-                Inverse::fake(&mut ctx, &0u8).unwrap(),
-            ],
-            |token, inputs| -> (SearchToken<'_>, Counter) {
+            &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
+            |token, inputs| -> (SearchToken<'_, '_>, Counter) {
                 assert_eq!(inputs.len(), 2);
                 let (token, x) = token.get(&inputs[0], 1);
                 let (token, y) = token.get(&inputs[1], 0);
@@ -268,11 +257,8 @@ mod test {
         let mut ctx = InverseContext::new();
         let cache = super::reverse_function(
             &builder,
-            &[
-                Inverse::fake(&mut ctx, &0u8).unwrap(),
-                Inverse::fake(&mut ctx, &0u8).unwrap(),
-            ],
-            |token, inputs| -> (SearchToken<'_>, Counter) {
+            &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
+            |token, inputs| -> (SearchToken<'_, '_>, Counter) {
                 assert_eq!(inputs.len(), 2);
                 let (token, _x) = token.get(&inputs[0], 1);
                 let (token, _y) = token.get(&inputs[1], 0);
@@ -291,11 +277,8 @@ mod test {
         let mut ctx = InverseContext::new();
         let cache = super::reverse_function(
             &builder,
-            &[
-                Inverse::fake(&mut ctx, &0u8).unwrap(),
-                Inverse::fake(&mut ctx, &0u8).unwrap(),
-            ],
-            |token, inputs| -> (SearchToken<'_>, Counter) {
+            &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
+            |token, inputs| -> (SearchToken<'_, '_>, Counter) {
                 assert_eq!(inputs.len(), 2);
                 let (token, _x) = token.get(&inputs[0], 1);
                 let (token, _y) = token.get(&inputs[1], 0);
@@ -319,7 +302,7 @@ mod test {
         let cache = super::map_reverse(
             &builder,
             vec![(1u8, 2usize), (2u8, 3usize), (1u8, 4usize)],
-            &Inverse::fake(&mut ctx, &0u8).unwrap(),
+            &ctx.fake(&0u8).unwrap(),
             |token, needle, (key, value)| {
                 let (token, matches) = token.eql(needle, key);
                 let count = if matches { *value } else { 0 };
