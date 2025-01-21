@@ -1,28 +1,43 @@
 //! Coppice is a dynamic programming library for acyclic analytical
-//! queries expressed as nested map/reduce computations.  These
-//! map/reduce computations are automatically cached and parallelised
-//! when executed with the [`map_reduce()`] higher-order function.
+//! queries expressed as nested map/reduce computations over the union
+//! of smaller data sets (tablets).  These map/reduce computations are
+//! automatically cached and parallelised when executed with the
+//! [`map_reduce()`] higher-order function.
 //!
-//! Of course, since we know we're only interested in full blown
+//! Of course, since we know we're only interested in final
 //! [`map_reduce()`] results, we actually memoise fully aggregated
 //! results for each "tablet" (small set of rows) and opaque `params`.
 //!
 //! In addition to these standard inputs (and cache keys), Coppice
-//! also passes "join keys" to the "map" functions.  This third type
+//! also passes "join keys" to the mapped functions.  This third type
 //! of inputs (in addition to rows and opaque `params`) enables
 //! Coppice to offer asymptotically superior performance compared to
-//! pure memoisation: [`map_reduce()`] essentially executes "map"
+//! pure memoisation: [`map_reduce()`] essentially executes mapped
 //! functions "in reverse," for join keys.
 //!
-//! The [`map_reduce()`] function thus ends up evaluating the "map"
+//! The [`map_reduce()`] function ends up evaluating the mapped
 //! function for each row and `params`, but extracts all join keys
 //! that, combined with the row and `params`, yields a non-trivial
-//! [`Aggregate`].  We thus extract, for each row and `params`,
-//! a branching function from join keys to [`Aggregate`], and reduce
-//! ([`merge::Merge`]) these branching functions together for
-//! all rows in a tablet.
+//! [`Aggregate`].  We thus extract, for each row and `params`, a
+//! branching function from join keys to [`Aggregate`], and reduce
+//! ([`merge::Merge`]) these branching functions together for all rows
+//! in a tablet.  The maximum number of join keys that yield
+//! non-trivial results for a given row (should) depend on the the
+//! mapped function, but not on the rows or `params`... i.e., it's
+//! a constant.
 //!
-//! Two key insights underlie Coppice.
+//! For analytical queries, the number of scan over data files is
+//! often what we really care about.  Pure memoisation gives us scans
+//! proportional to `|tablets| * |params| * |join_keys|`; that's often
+//! unrealistically large, which forces people to come up with ad hoc
+//! indexing schemes.  The way Coppice caches branching functions
+//! instead of raw values means the number of scans instead scales
+//! with `|tablets| * |params|`.  When the join keys have a large
+//! cardinality, shaving that `|join_keys|` multiplicative factor in
+//! I/O can be a real practical win... hopefully enough to justify
+//! the CPU overhead of Coppice's function inversion approach.
+//!
+//! Two key ideas underlie Coppice.
 //!
 //! The first is that backtracking search over join keys represented
 //! as bounded arrays of bits gives us enough finite domain powers to
@@ -35,7 +50,7 @@
 //! the tree necessary for [Yannakakis's algorithm](https://en.wikipedia.org/wiki/Yannakakis_algorithm)
 //! (maybe less well known).
 //!
-//! In short, the Coppice is just an API trick to coerce Rust covers
+//! In short, the Coppice is just an API trick to coerce Rust coders
 //! into writing plain code that can be executed with a version of
 //! Yannakakis's algorithm simplified for the hierarchical subset of
 //! acyclic queries.
