@@ -284,6 +284,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[derive(Hash, PartialEq, Eq, Default, Clone, Debug)]
     struct Counter {
@@ -306,7 +307,7 @@ mod test {
             ("test",),
             join_key,
             &|tablet| {
-                LOAD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                LOAD_COUNT.fetch_add(1, Ordering::Relaxed);
 
                 if tablet == "foo" {
                     Ok(vec![(1u8, 2usize), (2u8, 3usize), (1u8, 4usize)])
@@ -334,60 +335,60 @@ mod test {
         fn test_map_reduce_smoke() {
             rayon::ThreadPoolBuilder::new().num_threads(1).build_global().unwrap();
 
-            LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+            LOAD_COUNT.store(0, Ordering::Relaxed);
 
             assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 1);
 
             assert_eq!(dummy(&["bar".to_owned()], 1).unwrap(), Counter { count: 60 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 2);
 
             assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 1).unwrap(), Counter { count: 66 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 2);
 
             assert_eq!(dummy(&["foo".to_owned(), "foo".to_owned()], 1).unwrap(), Counter { count: 12 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 2);
 
             assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 11).unwrap(), Counter { count: 42 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 2);
 
             assert_eq!(dummy(&["foo".to_owned(), "bar".to_owned()], 2).unwrap(), Counter { count: 33 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 2);
         }
 
         #[test]
         fn test_map_reduce_join_keys() {
             // Test that we get the correct result for each join
             // keys... and that we scan the data set only once.
-            LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+            LOAD_COUNT.store(0, Ordering::Relaxed);
 
             assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 1);
 
             assert_eq!(dummy(&["foo".to_owned()], 1).unwrap(), Counter { count: 6 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 1);
 
             assert_eq!(dummy(&["foo".to_owned()], 2).unwrap(), Counter { count: 3 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 1);
         }
 
         #[test]
         fn test_map_reduce_clear() {
-            LOAD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+            LOAD_COUNT.store(0, Ordering::Relaxed);
 
             // Cache works
             assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 1);
             assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 1);
 
             clear_all_caches();
 
             // Must repopulate cache
             assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 2);
             assert_eq!(dummy(&["foo".to_owned()], 0).unwrap(), Counter { count: 0 });
-            assert_eq!(LOAD_COUNT.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(LOAD_COUNT.load(Ordering::Relaxed), 2);
         }
     }
 }
