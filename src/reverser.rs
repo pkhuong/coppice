@@ -216,7 +216,13 @@ mod test {
         }
     }
 
-    impl Aggregate for Counter {}
+    impl Aggregate for Counter {
+        type Inner = usize;
+
+        fn into_inner(self) -> usize {
+            self.count
+        }
+    }
 
     #[test]
     fn test_reverse_smoke() {

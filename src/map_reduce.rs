@@ -301,7 +301,13 @@ mod test {
         }
     }
 
-    impl Aggregate for Counter {}
+    impl Aggregate for Counter {
+        type Inner = usize;
+
+        fn into_inner(self) -> usize {
+            self.count
+        }
+    }
 
     static LOAD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

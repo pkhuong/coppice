@@ -84,9 +84,13 @@ pub use map_reduce::map_reduce;
 pub trait Aggregate:
     merge::Merge + std::hash::Hash + PartialEq + Eq + Default + Sync + Clone
 {
+    type Inner;
+
     fn is_default(&self) -> bool {
         self == &Default::default()
     }
+
+    fn into_inner(self) -> Self::Inner;
 }
 
 /// In most cases (e.g., standard and automatically derived Hash
