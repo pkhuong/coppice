@@ -54,16 +54,18 @@ impl<'tag> SearchToken<'tag, '_> {
         index: u32,
     ) -> (Self, bool) {
         self.state
-            .check_mapping(input.0, &input as *const _ as usize);
+            .check_mapping(input.0, input as *const Inverse<_> as usize);
         let ret = self.state.get(input.0, index);
         (self, ret)
     }
 
-    pub fn eql<T: BaseJoinKey>(self, input: &Inverse<'tag, T>, value: &T) -> (Self, bool) {
+    fn eql_raw<T: BaseJoinKey + ?Sized>(
+        self,
+        input: &Inverse<'tag, T>,
+        bytes: &[u8],
+    ) -> (Self, bool) {
         self.state
-            .check_mapping(input.0, &input as *const _ as usize);
-        let value = value.to_bytes();
-        let bytes: &[u8] = value.as_ref();
+            .check_mapping(input.0, input as *const Inverse<_> as usize);
         for (byte_idx, byte) in bytes.iter().copied().enumerate() {
             for bit_idx in 0..8 {
                 let wanted = (byte >> bit_idx) & 1 != 0;
@@ -74,6 +76,45 @@ impl<'tag> SearchToken<'tag, '_> {
         }
 
         (self, true)
+    }
+
+    pub fn eql<T: BaseJoinKey + ?Sized>(self, input: &Inverse<'tag, T>, value: &T) -> (Self, bool) {
+        let value = value.to_bytes();
+        self.eql_raw(input, value.as_ref())
+    }
+
+    pub fn eql_any<T: BaseJoinKey + ?Sized>(
+        self,
+        input: &Inverse<'tag, T>,
+        values: &[&T],
+    ) -> (Self, bool) {
+        fn get_bit(bytes: &[u8], idx: usize) -> bool {
+            let byte_index = idx / 8;
+            let sub_idx = idx % 8;
+
+            (bytes.get(byte_index).unwrap_or(&0) & (1 << sub_idx)) != 0
+        }
+
+        self.state
+            .check_mapping(input.0, input as *const Inverse<_> as usize);
+        let values = values.iter().map(|x| x.to_bytes()).collect::<Vec<_>>();
+        let mut raw_values: Vec<&[u8]> = values.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
+        raw_values.sort();
+        raw_values.dedup();
+
+        let mut next_bit_idx: u32 = 0;
+        while raw_values.len() > 1 {
+            let actual_bit = self.state.get(input.0, next_bit_idx);
+            raw_values.retain(|bytes| get_bit(bytes, next_bit_idx as usize) == actual_bit);
+
+            next_bit_idx += 1;
+        }
+
+        if let Some(highlander) = raw_values.first() {
+            self.eql_raw(input, highlander)
+        } else {
+            (self, false)
+        }
     }
 }
 
