@@ -96,13 +96,8 @@ where
     TransformedRow: Send,
     TransformedRows: rayon::iter::IntoParallelIterator<Item = TransformedRow>,
     TransformFn: Fn(&Params, InputRows) -> Result<TransformedRows, &'static str> + Sync,
-    WorkerFn: for<'b> Fn(
-            SearchToken<'static, 'b>,
-            &Params,
-            &JoinKeys,
-            &TransformedRow,
-        ) -> (SearchToken<'static, 'b>, Summary)
-        + Sync,
+    WorkerFn:
+        for<'b> Fn(SearchToken<'static, 'b>, &Params, &JoinKeys, &TransformedRow) -> Summary + Sync,
 {
     use std::any::TypeId;
 
@@ -282,13 +277,8 @@ where
     Rows: rayon::iter::IntoParallelIterator<Item = Row>,
     JoinKeysT: JoinKeys + ?Sized + 'static,
     RowFn: Fn(&Tablet) -> Result<Rows, &'static str> + Sync,
-    WorkerFn: for<'a, 'b> Fn(
-            SearchToken<'a, 'b>,
-            &Params,
-            &JoinKeysT::Ret<'a>,
-            &Row,
-        ) -> (SearchToken<'a, 'b>, Summary)
-        + Sync,
+    WorkerFn:
+        for<'a, 'b> Fn(SearchToken<'a, 'b>, &Params, &JoinKeysT::Ret<'a>, &Row) -> Summary + Sync,
 {
     map_map_reduce(
         tablets,
@@ -349,7 +339,7 @@ where
             &Params,
             &JoinKeysT::Ret<'a>,
             &TransformedRow,
-        ) -> (SearchToken<'a, 'b>, Summary)
+        ) -> Summary
         + Sync,
 {
     let mut ctx = InverseContext::<'static>::new();
@@ -406,9 +396,9 @@ mod test {
             },
             &|token, params, needle, (key, value)| {
                 assert_eq!(*params, ("test",));
-                let (token, matches) = token.eql(needle, key);
+                let (_token, matches) = token.eql(needle, key);
                 let count = if matches { *value } else { 0 };
-                (token, Counter::new(count as u64))
+                Counter::new(count as u64)
             },
         )
     }

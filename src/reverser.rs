@@ -190,7 +190,7 @@ impl SearchState {
 pub fn reverse_function<T: Aggregate, JK>(
     builder: &Builder<T>,
     join_keys: &JK,
-    worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK) -> (SearchToken<'static, 'b>, T),
+    worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK) -> T,
 ) -> Result<Node<T>, &'static str> {
     let mut acc = builder.make_empty();
     let mut state = SearchState::new();
@@ -199,7 +199,7 @@ pub fn reverse_function<T: Aggregate, JK>(
             state: &mut state,
             _marker: Default::default(),
         };
-        let (_token, value) = worker(token, join_keys);
+        let value = worker(token, join_keys);
         let spine = builder.make_spine(state.path(), value);
         acc = builder.disjoint_union(acc, spine)?;
 
@@ -220,9 +220,7 @@ pub fn map_reverse<T: Aggregate + Send, Row: Send, JK: Sync>(
     builder: &Builder<T>,
     items: impl rayon::iter::IntoParallelIterator<Item = Row>,
     join_keys: &JK,
-    worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK, &Row) -> (SearchToken<'static, 'b>, T)
-        + Sync
-        + Send,
+    worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK, &Row) -> T + Sync + Send,
 ) -> Result<Node<T>, &'static str> {
     use rayon::iter::ParallelIterator;
 
@@ -241,7 +239,6 @@ pub fn map_reverse<T: Aggregate + Send, Row: Send, JK: Sync>(
 #[cfg(test)]
 mod test {
     use super::InverseContext;
-    use super::SearchToken;
     use crate::aggregates::Counter;
     use crate::bad_trie::Builder;
     use crate::bad_trie::Node;
@@ -253,12 +250,12 @@ mod test {
         let cache = super::reverse_function(
             &builder,
             &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
-            |token, inputs| -> (SearchToken<'_, '_>, Counter) {
+            |token, inputs| -> Counter {
                 assert_eq!(inputs.len(), 2);
                 let (token, x) = token.get(&inputs[0], 1);
-                let (token, y) = token.get(&inputs[1], 0);
+                let (_token, y) = token.get(&inputs[1], 0);
 
-                (token, Counter::new((x as u64) + (y as u64)))
+                Counter::new((x as u64) + (y as u64))
             },
         )
         .expect("should work");
@@ -291,12 +288,12 @@ mod test {
         let cache = super::reverse_function(
             &builder,
             &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
-            |token, inputs| -> (SearchToken<'_, '_>, Counter) {
+            |token, inputs| -> Counter {
                 assert_eq!(inputs.len(), 2);
                 let (token, _x) = token.get(&inputs[0], 1);
-                let (token, _y) = token.get(&inputs[1], 0);
+                let (_token, _y) = token.get(&inputs[1], 0);
 
-                (token, Counter { count: 0 })
+                Counter { count: 0 }
             },
         )
         .expect("should work");
@@ -311,12 +308,12 @@ mod test {
         let cache = super::reverse_function(
             &builder,
             &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
-            |token, inputs| -> (SearchToken<'_, '_>, Counter) {
+            |token, inputs| -> Counter {
                 assert_eq!(inputs.len(), 2);
                 let (token, _x) = token.get(&inputs[0], 1);
-                let (token, _y) = token.get(&inputs[1], 0);
+                let (_token, _y) = token.get(&inputs[1], 0);
 
-                (token, Counter { count: 1 })
+                Counter { count: 1 }
             },
         )
         .expect("should work");
@@ -337,9 +334,9 @@ mod test {
             vec![(1u8, 2usize), (2u8, 3usize), (1u8, 4usize)],
             &ctx.fake(&0u8).unwrap(),
             |token, needle, (key, value)| {
-                let (token, matches) = token.eql(needle, key);
+                let (_token, matches) = token.eql(needle, key);
                 let count = if matches { *value } else { 0 };
-                (token, Counter::new(count as u64))
+                Counter::new(count as u64)
             },
         )
         .unwrap();

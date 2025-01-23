@@ -109,7 +109,7 @@ fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
         (),
         &(),
         &|path| load_json_dump(path),
-        &|token, _params, _keys, _row| (token, Counter::new(1)),
+        &|_token, _params, _keys, _row| Counter::new(1),
     )?
     .count;
     Ok(ret)
@@ -121,7 +121,7 @@ fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &
         (),
         &(),
         &|path| load_json_dump(path),
-        &|token, _params, _keys, row| {
+        &|_token, _params, _keys, row| {
             let mut ret: Histogram<String> = Default::default();
 
             for work in row.works.iter() {
@@ -130,7 +130,7 @@ fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &
                 }
             }
 
-            (token, ret)
+            ret
         },
     )?;
 
@@ -163,7 +163,7 @@ fn count_composer_cooccurrences(
             let mut maybe_composers: Vec<&Option<String>> = vec![&None];
             maybe_composers.extend(composers.iter());
 
-            let (token, found_match) = token.eql_any(root_composer, &maybe_composers);
+            let (_token, found_match) = token.eql_any(root_composer, &maybe_composers);
 
             if found_match {
                 for composer in composers.iter().flatten().cloned() {
@@ -171,7 +171,7 @@ fn count_composer_cooccurrences(
                 }
             }
 
-            (token, ret)
+            ret
         },
     )?;
 
