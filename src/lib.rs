@@ -89,6 +89,12 @@ pub trait Aggregate:
     }
 }
 
+/// In most cases (e.g., standard and automatically derived Hash
+/// traits), the hash trait feeds different bytes for different
+/// inputs.  In that case, we can compute a fingerprint with the
+/// regular [`std::hash::Hash`] implementation.
+pub trait HashIsInjective: std::hash::Hash + Eq {}
+
 /// Individual join keys (that are run "in reverse") must be convertible to byte
 /// arrays (bit vectors really, but byte arrays are convenient).
 pub trait BaseJoinKey {
@@ -250,14 +256,20 @@ impl BaseJoinKey for u128 {
     }
 }
 
-static STRING_PARAMS: std::sync::LazyLock<umash::Params> =
+impl HashIsInjective for str {}
+impl HashIsInjective for String {}
+impl<T: HashIsInjective> HashIsInjective for Option<T> {}
+impl<T: HashIsInjective> HashIsInjective for Vec<T> {}
+impl<T: HashIsInjective> HashIsInjective for [T] {}
+
+static INJECTIVE_HASH_PARAMS: std::sync::LazyLock<umash::Params> =
     std::sync::LazyLock::new(Default::default);
 
-impl BaseJoinKey for &str {
+impl<T: HashIsInjective> BaseJoinKey for T {
     type Ret = [u8; 16];
 
     fn to_bytes(&self) -> Self::Ret {
-        let fprint = STRING_PARAMS.fingerprint(self);
+        let fprint = INJECTIVE_HASH_PARAMS.fingerprint(self);
         let hi = fprint.hash() as u128;
         let lo = fprint.secondary() as u128;
         ((hi << 64) | lo).to_be_bytes()
