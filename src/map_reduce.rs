@@ -47,6 +47,8 @@ type ShapeKey = (
     std::any::TypeId, // Tablet
     std::any::TypeId, // Params
     std::any::TypeId, // JoinKeys
+    std::any::TypeId, // RowFn
+    std::any::TypeId, // WorkerFn
     usize,            // &RowFn
     usize,            // &WorkerFn
 );
@@ -90,6 +92,8 @@ where
         TypeId::of::<Tablet>(),
         TypeId::of::<Params>(),
         TypeId::of::<JoinKeys>(),
+        TypeId::of::<RowFn>(),
+        TypeId::of::<WorkerFn>(),
         row_fn as *const RowFn as usize,
         worker as *const WorkerFn as usize,
     );
