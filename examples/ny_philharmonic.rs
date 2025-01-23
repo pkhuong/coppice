@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use coppice::aggregates::Counter;
 use coppice::aggregates::Histogram;
+use coppice::map_map_reduce;
 use coppice::map_reduce;
 
 #[allow(dead_code)]
@@ -140,26 +141,32 @@ fn count_composer_cooccurrences(
     files: &[PathBuf],
     root_composer: Option<String>,
 ) -> Result<Vec<(String, u64)>, &'static str> {
-    let cooccurrences = map_reduce(
+    use rayon::iter::IntoParallelIterator;
+    use rayon::iter::ParallelIterator;
+
+    let cooccurrences = map_map_reduce(
         files,
         (),
         &root_composer,
         &|path| load_json_dump(path),
-        &|token, _params, root_composer, row| {
+        &|_params, rows| {
+            Ok(rows.into_par_iter().map(|row| {
+                row.works
+                    .iter()
+                    .map(|work| work.composer_name.clone())
+                    .collect::<Vec<Option<String>>>()
+            }))
+        },
+        &|token, _params, root_composer, composers| {
             let mut ret: Histogram<String> = Default::default();
 
-            let composers = row
-                .works
-                .iter()
-                .map(|work| work.composer_name.clone())
-                .collect::<Vec<Option<String>>>();
             let mut maybe_composers: Vec<&Option<String>> = vec![&None];
             maybe_composers.extend(composers.iter());
 
             let (token, found_match) = token.eql_any(root_composer, &maybe_composers);
 
             if found_match {
-                for composer in composers.into_iter().flatten() {
+                for composer in composers.iter().flatten().cloned() {
                     ret.observe(composer, Counter::new(1));
                 }
             }
