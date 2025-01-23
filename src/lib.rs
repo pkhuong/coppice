@@ -108,7 +108,7 @@ pub trait JoinKeys {
 
 impl<T> JoinKeys for T
 where
-    T: BaseJoinKey + 'static,
+    T: BaseJoinKey + ?Sized + 'static,
 {
     type Ret<'a> = Inverse<'a, T>;
     fn invert<'a>(&self, ctx: &mut InverseContext<'a>) -> Result<Self::Ret<'a>, &'static str> {
