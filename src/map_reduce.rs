@@ -241,7 +241,7 @@ where
 pub fn map_reduce<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn>(
     tablets: &[Tablet],
     params: Params,
-    join_keys: JoinKeysT,
+    join_keys: &JoinKeysT,
     row_fn: &'static RowFn,
     worker: &'static WorkerFn,
 ) -> Result<Summary, &'static str>
@@ -251,7 +251,7 @@ where
     Params: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
     Row: Send,
     Rows: rayon::iter::IntoParallelIterator<Item = Row>,
-    JoinKeysT: JoinKeys + 'static,
+    JoinKeysT: JoinKeys + ?Sized + 'static,
     RowFn: Fn(&Tablet) -> Result<Rows, &'static str> + Sync,
     WorkerFn: for<'a, 'b> Fn(
             SearchToken<'a, 'b>,
@@ -315,7 +315,7 @@ mod test {
         map_reduce(
             tablets,
             ("test",),
-            join_key,
+            &join_key,
             &|tablet| {
                 LOAD_COUNT.fetch_add(1, Ordering::Relaxed);
 
