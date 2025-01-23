@@ -54,6 +54,7 @@
 //! into writing plain code that can be executed with a version of
 //! Yannakakis's algorithm simplified for the hierarchical subset of
 //! acyclic queries.
+pub mod aggregates;
 mod bad_trie;
 mod map_reduce;
 mod reverser;

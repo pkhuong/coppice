@@ -288,26 +288,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::aggregates::Counter;
     use std::sync::atomic::Ordering;
-
-    #[derive(Hash, PartialEq, Eq, Default, Clone, Debug)]
-    struct Counter {
-        count: usize,
-    }
-
-    impl merge::Merge for Counter {
-        fn merge(&mut self, other: Counter) {
-            self.count += other.count;
-        }
-    }
-
-    impl Aggregate for Counter {
-        type Inner = usize;
-
-        fn into_inner(self) -> usize {
-            self.count
-        }
-    }
 
     static LOAD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -334,7 +316,7 @@ mod test {
                 assert_eq!(*params, ("test",));
                 let (token, matches) = token.eql(needle, key);
                 let count = if matches { *value } else { 0 };
-                (token, Counter { count })
+                (token, Counter::new(count as u64))
             },
         )
     }

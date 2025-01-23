@@ -242,28 +242,9 @@ pub fn map_reverse<T: Aggregate + Send, Row: Send, JK: Sync>(
 mod test {
     use super::InverseContext;
     use super::SearchToken;
+    use crate::aggregates::Counter;
     use crate::bad_trie::Builder;
     use crate::bad_trie::Node;
-    use crate::Aggregate;
-
-    #[derive(Hash, PartialEq, Eq, Default, Clone, Debug)]
-    struct Counter {
-        count: usize,
-    }
-
-    impl merge::Merge for Counter {
-        fn merge(&mut self, other: Counter) {
-            self.count += other.count;
-        }
-    }
-
-    impl Aggregate for Counter {
-        type Inner = usize;
-
-        fn into_inner(self) -> usize {
-            self.count
-        }
-    }
 
     #[test]
     fn test_reverse_smoke() {
@@ -277,12 +258,7 @@ mod test {
                 let (token, x) = token.get(&inputs[0], 1);
                 let (token, y) = token.get(&inputs[1], 0);
 
-                (
-                    token,
-                    Counter {
-                        count: (x as usize) + (y as usize),
-                    },
-                )
+                (token, Counter::new((x as u64) + (y as u64)))
             },
         )
         .expect("should work");
@@ -363,7 +339,7 @@ mod test {
             |token, needle, (key, value)| {
                 let (token, matches) = token.eql(needle, key);
                 let count = if matches { *value } else { 0 };
-                (token, Counter { count })
+                (token, Counter::new(count as u64))
             },
         )
         .unwrap();
