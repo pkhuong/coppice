@@ -15,7 +15,7 @@ pub struct Split<T: Aggregate> {
 
 #[derive(Debug)]
 pub enum Node<T: Aggregate> {
-    Default,
+    Neutral,
     Leaf(Arc<T>),
     Split(Arc<Split<T>>),
 }
@@ -23,7 +23,7 @@ pub enum Node<T: Aggregate> {
 impl<T: Aggregate> Clone for Node<T> {
     fn clone(&self) -> Node<T> {
         match self {
-            Node::Default => Node::Default,
+            Node::Neutral => Node::Neutral,
             Node::Leaf(leaf) => Node::Leaf(leaf.clone()),
             Node::Split(split) => Node::Split(split.clone()),
         }
@@ -41,7 +41,7 @@ pub struct Builder<T: Aggregate> {
 impl<T: Aggregate> Node<T> {
     fn as_usize(&self) -> usize {
         match self {
-            Node::Default => 0,
+            Node::Neutral => 0,
             Node::Leaf(ref leaf) => Arc::as_ptr(leaf) as usize,
             Node::Split(ref split) => Arc::as_ptr(split) as usize,
         }
@@ -49,7 +49,7 @@ impl<T: Aggregate> Node<T> {
 
     pub fn lookup(&self, inputs: &[&[u8]]) -> Result<Option<Arc<T>>, &'static str> {
         match self {
-            Node::Default => Ok(None),
+            Node::Neutral => Ok(None),
             Node::Leaf(leaf) => Ok(Some(leaf.clone())),
             Node::Split(split) => {
                 let input = inputs
@@ -68,13 +68,13 @@ impl<T: Aggregate> Node<T> {
 }
 
 impl<T: Aggregate> Builder<T> {
-    pub fn make_empty(&self) -> Node<T> {
-        Node::Default
+    pub fn make_neutral(&self) -> Node<T> {
+        Node::Neutral
     }
 
     fn make_leaf(&self, value: T) -> Node<T> {
-        if value.is_default() {
-            return self.make_empty();
+        if value.is_neutral() {
+            return self.make_neutral();
         }
 
         let mut cache = self.leaf_cache.lock().unwrap();
@@ -108,12 +108,12 @@ impl<T: Aggregate> Builder<T> {
 
     pub fn make_spine(&self, path: &[(u8, u32, bool)], value: T) -> Node<T> {
         let mut acc = self.make_leaf(value);
-        if matches!(acc, Node::Default) {
+        if matches!(acc, Node::Neutral) {
             return acc;
         }
 
         for (input, index, value) in path.iter().rev().copied() {
-            let mut arcs = [Node::Default, Node::Default];
+            let mut arcs = [Node::Neutral, Node::Neutral];
             arcs[value as usize] = acc;
             acc = self.make_split(input, index, arcs);
         }
@@ -123,7 +123,7 @@ impl<T: Aggregate> Builder<T> {
 
     pub fn disjoint_union(&self, x: Node<T>, y: Node<T>) -> Result<Node<T>, &'static str> {
         match (x, y) {
-            (Node::Default, other) | (other, Node::Default) => Ok(other),
+            (Node::Neutral, other) | (other, Node::Neutral) => Ok(other),
             (Node::Leaf(x), Node::Leaf(y)) => {
                 if x == y {
                     Ok(Node::Leaf(x))
@@ -159,7 +159,7 @@ impl<T: Aggregate> Builder<T> {
 
     pub fn merge(&self, x: Node<T>, y: Node<T>) -> Result<Node<T>, &'static str> {
         match (x, y) {
-            (Node::Default, other) | (other, Node::Default) => Ok(other),
+            (Node::Neutral, other) | (other, Node::Neutral) => Ok(other),
             (Node::Leaf(x), Node::Leaf(y)) => {
                 let mut acc: T = (*x).clone();
                 acc.merge((*y).clone());

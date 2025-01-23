@@ -192,7 +192,7 @@ pub fn reverse_function<T: Aggregate, JK>(
     join_keys: &JK,
     worker: impl for<'b> Fn(SearchToken<'static, 'b>, &JK) -> T,
 ) -> Result<Node<T>, &'static str> {
-    let mut acc = builder.make_empty();
+    let mut acc = builder.make_neutral();
     let mut state = SearchState::new();
     loop {
         let token = SearchToken {
@@ -224,7 +224,7 @@ pub fn map_reverse<T: Aggregate + Send, Row: Send, JK: Sync>(
 ) -> Result<Node<T>, &'static str> {
     use rayon::iter::ParallelIterator;
 
-    let identity = || builder.make_empty();
+    let identity = || builder.make_neutral();
 
     items
         .into_par_iter()
@@ -298,7 +298,7 @@ mod test {
         )
         .expect("should work");
 
-        assert!(matches!(cache, Node::Default));
+        assert!(matches!(cache, Node::Neutral));
     }
 
     #[test]

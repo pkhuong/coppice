@@ -198,7 +198,7 @@ pub trait Aggregate:
 {
     type Inner;
 
-    fn is_default(&self) -> bool {
+    fn is_neutral(&self) -> bool {
         self == &Default::default()
     }
 
