@@ -54,6 +54,116 @@
 //! into writing plain code that can be executed with a version of
 //! Yannakakis's algorithm simplified for the hierarchical subset of
 //! acyclic queries.
+//!
+//! # Examples
+//!
+//! See `examples/ny_philharmonic.rs` for an executable example that
+//! processes sets of JSON files that each contains metadata for the
+//! New York Philharmonic Orchestra's performances over different
+//! periods.
+//!
+//! Counting the total number of programs is a simple map/reduce function:
+//!
+//! ```
+//! fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
+//!     let ret = map_reduce(
+//!         files,
+//!         (),   // no parameter
+//!         &(),  // no join key
+//!         &|path| load_json_dump(path),  // just load the JSON file at that path
+//!         &|_token, _params, _keys, _row| Counter::new(1),  // Count 1 for each program object
+//!     )?
+//!     .count;
+//!     Ok(ret)
+//! }
+//! ```
+//!
+//! Counting the number of performances for each composer isn't hard either
+//!
+//! ```
+//! fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
+//!     let occurrences = map_reduce(
+//!         files,
+//!         (),   // no parameter
+//!         &(),  // no join key
+//!         &|path| load_json_dump(path),
+//!         &|_token, _params, _keys, row| {
+//!             let mut ret: Histogram<String> = Default::default();
+//!
+//!             for work in row.works.iter() {
+//!                 if let Some(composer) = &work.composer_name {
+//!                     ret.observe(composer.to_owned(), Counter::new(1));
+//!                 }
+//!             }
+//!
+//!             ret
+//!         },
+//!     )?;
+//!
+//!     Ok(occurrences.into_popularity_sorted_vec())
+//! }
+//! ```
+//!
+//! It's nice that the above is automatically cached and parallelised,
+//! but that's nothing super interesting.  The next one should be more
+//! interesting: we can accept an optional "root" composer, and count
+//! composer occurrences for programs in which the root composer was
+//! also featured.
+//!
+//! ```
+//! fn count_composer_cooccurrences(
+//!     files: &[PathBuf],
+//!     root_composer: Option<String>,
+//! ) -> Result<Vec<(String, u64)>, &'static str> {
+//!     use rayon::iter::IntoParallelIterator;
+//!     use rayon::iter::ParallelIterator;
+//!
+//!     let cooccurrences = map_map_reduce(
+//!         files,
+//!         (),  // no parameter
+//!         &root_composer,  // one join key
+//!         &|path| load_json_dump(path),
+//!         &|_params, rows| {  // Convert each program to a list of composer names
+//!             Ok(rows.into_par_iter().map(|row| {
+//!                 row.works
+//!                     .iter()
+//!                     .map(|work| work.composer_name.clone())
+//!                     .collect::<Vec<Option<String>>>()
+//!             }))
+//!         },
+//!         &|token, _params, root_composer, composers| {
+//!             let mut ret: Histogram<String> = Default::default();
+//!
+//!             let mut maybe_composers: Vec<&Option<String>> = vec![&None];
+//!             maybe_composers.extend(composers.iter());
+//!
+//!             let (_token, found_match) = token.eql_any(root_composer, &maybe_composers);
+//!
+//!             if found_match {
+//!                 for composer in composers.iter().flatten().cloned() {
+//!                     ret.observe(composer, Counter::new(1));
+//!                 }
+//!             }
+//!
+//!             ret
+//!         },
+//!     )?;
+//!
+//!     Ok(cooccurrences.into_popularity_sorted_vec())
+//! }
+//! ```
+//!
+//! This more complex examples shows what's interesting about Coppice: the `map_map_reduce`
+//! call scans the files *once* regardless of how many different `root_composer` values
+//! we pass.
+//!
+//! On my laptop, the first call to `count_composer_cooccurrences` takes 8 seconds.
+//! Subsequence calls with various root composers (e.g., count how many times works
+//! by each composer was played in the same program as Wagner) take 200 *micro* seconds,
+//! without any file I/O.  This is possible because [`map_reduce()`] enumerates all
+//! possible values of `root_composer` that would result in a non-trival result, for
+//! each row, and caches the result in a (bad) trie.
+
 pub mod aggregates;
 mod bad_trie;
 mod map_reduce;
