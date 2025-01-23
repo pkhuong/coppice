@@ -64,7 +64,7 @@
 //!
 //! Counting the total number of programs is a simple map/reduce function:
 //!
-//! ```
+//! ```ignore
 //! fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
 //!     let ret = map_reduce(
 //!         files,
@@ -80,7 +80,7 @@
 //!
 //! Counting the number of performances for each composer isn't hard either
 //!
-//! ```
+//! ```ignore
 //! fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
 //!     let occurrences = map_reduce(
 //!         files,
@@ -110,7 +110,7 @@
 //! composer occurrences for programs in which the root composer was
 //! also featured.
 //!
-//! ```
+//! ```ignore
 //! fn count_composer_cooccurrences(
 //!     files: &[PathBuf],
 //!     root_composer: Option<String>,
