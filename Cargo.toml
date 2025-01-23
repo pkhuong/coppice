@@ -1,8 +1,9 @@
 [package]
 name = "coppice"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Dynamic programming library for acyclic analytical queries"
+repository = "https://github.com/pkhuong/coppice"
 license = "MIT"
 
 [dependencies]
