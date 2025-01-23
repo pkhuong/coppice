@@ -63,6 +63,7 @@ use reverser::Inverse;
 use reverser::InverseContext;
 
 pub use map_reduce::clear_all_caches;
+pub use map_reduce::map_map_reduce;
 pub use map_reduce::map_reduce;
 
 /// Coppice caches results from aggregate queries where the query results

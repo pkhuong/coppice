@@ -48,8 +48,10 @@ type ShapeKey = (
     std::any::TypeId, // Params
     std::any::TypeId, // JoinKeys
     std::any::TypeId, // RowFn
+    std::any::TypeId, // TransformFn
     std::any::TypeId, // WorkerFn
     usize,            // &RowFn
+    usize,            // &TransformFn
     usize,            // &WorkerFn
 );
 
@@ -57,31 +59,48 @@ static SUMMARY_CACHES: std::sync::LazyLock<
     Mutex<HashMap<ShapeKey, Arc<dyn std::any::Any + Sync + Send>>>,
 > = std::sync::LazyLock::new(Default::default);
 
-/// Clears *all* query caches for [`map_reduce`] calls in the current process.
+/// Clears *all* query caches for [`map_reduce`] or [`map_map_reduce`]
+/// calls in the current process.
 pub fn clear_all_caches() {
     SUMMARY_CACHES.lock().unwrap().clear();
 }
 
-fn ensure_populated_cells<Summary, Tablet, Params, Row, Rows, JoinKeys, RowFn, WorkerFn>(
+fn ensure_populated_cells<
+    Summary,
+    Tablet,
+    Params,
+    InputRow,
+    InputRows,
+    JoinKeys,
+    RowFn,
+    TransformedRow,
+    TransformedRows,
+    TransformFn,
+    WorkerFn,
+>(
     tablets: &[Tablet],
     params: &Params,
     join_keys: &JoinKeys,
     row_fn: &'static RowFn,
+    transform_fn: &'static TransformFn,
     worker: &'static WorkerFn,
 ) -> Result<Vec<NodeCell<Summary>>, &'static str>
 where
     Summary: Aggregate + Send + 'static,
     Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
     Params: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
-    Row: Send,
-    Rows: rayon::iter::IntoParallelIterator<Item = Row>,
+    InputRow: Send,
+    InputRows: rayon::iter::IntoParallelIterator<Item = InputRow>,
     JoinKeys: Sync + 'static,
-    RowFn: Fn(&Tablet) -> Result<Rows, &'static str> + Sync,
+    RowFn: Fn(&Tablet) -> Result<InputRows, &'static str> + Sync,
+    TransformedRow: Send,
+    TransformedRows: rayon::iter::IntoParallelIterator<Item = TransformedRow>,
+    TransformFn: Fn(&Params, InputRows) -> Result<TransformedRows, &'static str> + Sync,
     WorkerFn: for<'b> Fn(
             SearchToken<'static, 'b>,
             &Params,
             &JoinKeys,
-            &Row,
+            &TransformedRow,
         ) -> (SearchToken<'static, 'b>, Summary)
         + Sync,
 {
@@ -93,8 +112,10 @@ where
         TypeId::of::<Params>(),
         TypeId::of::<JoinKeys>(),
         TypeId::of::<RowFn>(),
+        TypeId::of::<TransformFn>(),
         TypeId::of::<WorkerFn>(),
         row_fn as *const RowFn as usize,
+        transform_fn as *const TransformFn as usize,
         worker as *const WorkerFn as usize,
     );
     let summary_cache = SUMMARY_CACHES
@@ -156,6 +177,14 @@ where
                     };
 
                     let rows = match row_fn(tablet) {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            err.lock().unwrap().get_or_insert(e);
+                            return;
+                        }
+                    };
+
+                    let rows = match transform_fn(params, rows) {
                         Ok(rows) => rows,
                         Err(e) => {
                             err.lock().unwrap().get_or_insert(e);
@@ -237,7 +266,7 @@ where
 /// and `worker` functions must be pure functions.  The caching logic
 /// uses these functions as part of the cache key, so they must have
 /// static lifetime (their addresses turn into cache keys).
-#[inline(never)]
+#[inline(always)]
 pub fn map_reduce<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn>(
     tablets: &[Tablet],
     params: Params,
@@ -261,10 +290,73 @@ where
         ) -> (SearchToken<'a, 'b>, Summary)
         + Sync,
 {
+    map_map_reduce(
+        tablets,
+        params,
+        join_keys,
+        row_fn,
+        &|_params, x| Ok(x),
+        worker,
+    )
+}
+
+/// The [`map_map_reduce`] generic function is like [`map_reduce`],
+/// except that an additionan `transform_fn` is applied to the output
+/// of the `row_fn` before inverting the `worker_fn`.
+///
+/// In traditional map-reduce, this intermediate step could be fused
+/// in a single map stage.  However, it can sometimes be helpful to
+/// transform the whole set of rows in bulk, and the `transform_fn`
+/// can also improve efficiency because it only runs once instead of
+/// re-executing from scratch for each iteration of the `worker_fn`
+/// inversion algorithm.
+#[inline(never)]
+pub fn map_map_reduce<
+    Summary,
+    Tablet,
+    Params,
+    InputRow,
+    InputRows,
+    JoinKeysT,
+    RowFn,
+    TransformFn,
+    TransformedRow,
+    TransformedRows,
+    WorkerFn,
+>(
+    tablets: &[Tablet],
+    params: Params,
+    join_keys: &JoinKeysT,
+    row_fn: &'static RowFn,
+    transform_fn: &'static TransformFn,
+    worker: &'static WorkerFn,
+) -> Result<Summary, &'static str>
+where
+    Summary: Aggregate + Send + 'static,
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Params: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    InputRow: Send,
+    InputRows: rayon::iter::IntoParallelIterator<Item = InputRow>,
+    JoinKeysT: JoinKeys + ?Sized + 'static,
+    RowFn: Fn(&Tablet) -> Result<InputRows, &'static str> + Sync,
+
+    TransformedRow: Send,
+    TransformedRows: rayon::iter::IntoParallelIterator<Item = TransformedRow>,
+    TransformFn: Fn(&Params, InputRows) -> Result<TransformedRows, &'static str> + Sync,
+
+    WorkerFn: for<'a, 'b> Fn(
+            SearchToken<'a, 'b>,
+            &Params,
+            &JoinKeysT::Ret<'a>,
+            &TransformedRow,
+        ) -> (SearchToken<'a, 'b>, Summary)
+        + Sync,
+{
     let mut ctx = InverseContext::<'static>::new();
     let join_keys = join_keys.invert(&mut ctx)?;
 
-    let node_cells = ensure_populated_cells(tablets, &params, &join_keys, row_fn, worker)?;
+    let node_cells =
+        ensure_populated_cells(tablets, &params, &join_keys, row_fn, transform_fn, worker)?;
     let lookup_keys = ctx.keys();
     let mut acc: Option<Summary> = None;
     for node_cell in node_cells {
