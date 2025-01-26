@@ -123,7 +123,7 @@
 //! ) -> Result<Vec<(String, u64)>, &'static str> {
 //!     coppice::query!(
 //!         // We take a PathBuf, a venue, and maybe a root composer, and return a histogram keyed on composer names.
-//!         COOCCURRENCES(path: PathBuf, venue: String, root_composer: Option<String>) -> Histogram<String>,
+//!         COOCCURRENCES(path: PathBuf, venue: +String, root_composer: -Option<String>) -> Histogram<String>,
 //!         load_json_dump(path),  // Again, load each `PathBuf` with `load_json_dump`.
 //!         rows => {
 //!             use rayon::iter::IntoParallelIterator;
@@ -203,7 +203,7 @@ pub use map_reduce::Query;
 /// The general form is
 ///
 /// ```ignore
-/// query!(QUERY_NAME(tablet_var: TabletType, params: ParamsType, join_keys: JoinKeys) -> Summary,
+/// query!(QUERY_NAME(tablet_var: TabletType, params: +ParamsType, join_keys: -JoinKeys) -> Summary,
 ///       [load_tablet(tablet_var)],
 ///       loaded_data => [transform(params, loaded_data)],
 ///       token, row => [map_function(token, params, join_keys, row)]);
@@ -213,12 +213,13 @@ pub use map_reduce::Query;
 /// values returned by `load_tablet` are passed straight to the map function
 /// (row by row).
 ///
-/// The `params: ParamsType` and `join_keys: JoinKeys` parameters may
-/// be omitted *at the same time*.  When absent, they're implicitly
-/// the unit `()`.
+/// Any or both the `-params: ParamsType` and `+join_keys: JoinKeys`
+/// parameters may be omitted.  When absent, they're implicitly the
+/// unit `()`.
 #[macro_export]
 macro_rules! query {
-    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: $Params:ty, $join_args:ident: $JoinKeys:ty) -> $Summary:ty,
+    // General form (map reduce / map map reduce)
+    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: +$Params:ty, $join_args:ident: -$JoinKeys:ty) -> $Summary:ty,
      $load_expr:expr,
      $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
         static $name: std::sync::LazyLock<
@@ -231,7 +232,7 @@ macro_rules! query {
         });
     };
 
-    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: $Params:ty, $join_args:ident: $JoinKeys:ty) -> $Summary:ty,
+    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: +$Params:ty, $join_args:ident: -$JoinKeys:ty) -> $Summary:ty,
      $load_expr:expr,
      $input_arg:ident => $transform_expr:expr,
      $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
@@ -246,6 +247,65 @@ macro_rules! query {
         });
     };
 
+    // ParamQuery
+    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: +$Params:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            Box<dyn coppice::ParamQuery<$Tablet, $Params, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_reduce::<$Summary, $Tablet, $Params, (), _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|$token_arg, $params_arg, _, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: +$Params:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $input_arg:ident => $transform_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            Box<dyn coppice::ParamQuery<$Tablet, $Params, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_map_reduce::<$Summary, $Tablet, $Params, (), _, _, _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|$params_arg, $input_arg| $transform_expr,
+                &|$token_arg, $params_arg, _, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    // JoinQuery
+    ($name:ident($load_arg:ident: $Tablet:ty, $join_args:ident: -$JoinKeys:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            Box<dyn coppice::JoinQuery<$Tablet, $JoinKeys, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_reduce::<$Summary, $Tablet, (), $JoinKeys, _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|$token_arg, _, $join_args, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    ($name:ident($load_arg:ident: $Tablet:ty, $join_args:ident: -$JoinKeys:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $input_arg:ident => $transform_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            Box<dyn coppice::JoinQuery<$Tablet, $JoinKeys, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_map_reduce::<$Summary, $Tablet, (), $JoinKeys, _, _, _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|_, $input_arg| $transform_expr,
+                &|$token_arg, _, $join_args, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    // NullaryQuery
     ($name:ident($load_arg:ident: $Tablet:ty) -> $Summary:ty,
      $load_expr:expr,
      $row_arg:ident => $row_expr:expr

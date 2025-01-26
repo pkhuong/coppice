@@ -155,7 +155,7 @@ fn count_composer_cooccurrences(
     root_composer: Option<String>,
 ) -> Result<Vec<(String, u64)>, &'static str> {
     coppice::query!(
-        COOCCURRENCES(path: PathBuf, venue: String, root_composer: Option<String>) -> Histogram<String>,
+        COOCCURRENCES(path: PathBuf, venue: +String, root_composer: -Option<String>) -> Histogram<String>,
         load_json_dump(path),
         rows => {
             use rayon::iter::IntoParallelIterator;
