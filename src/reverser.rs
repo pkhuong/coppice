@@ -150,6 +150,13 @@ impl SearchState {
 
         assert!(self.num_choices <= self.next_path_to_explore.len());
         if self.num_choices == self.next_path_to_explore.len() {
+            // We're adding a new choice.  Ensure that we're doing it monotonically.
+            if let Some(prev) = self.next_path_to_explore.last() {
+                if (prev.0, prev.1) > (input, index) {
+                    self.error = Some("Out of order elimination")
+                }
+            }
+
             self.next_path_to_explore.push((input, index, false));
         }
 
