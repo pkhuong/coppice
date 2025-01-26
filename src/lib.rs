@@ -65,16 +65,18 @@
 //! Counting the total number of programs is a simple map/reduce function:
 //!
 //! ```ignore
+//! fn load_json_dump(path: impl AsRef<Path>) -> Result<Vec<Program>, &'static str>;
+//!
 //! fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
-//!     let ret = map_reduce(
-//!         files,
-//!         (),   // no parameter
-//!         &(),  // no join key
-//!         &|path| load_json_dump(path),  // just load the JSON file at that path
-//!         &|_token, _params, _keys, _row| Counter::new(1),  // Count 1 for each program object
-//!     )?
-//!     .count;
-//!     Ok(ret)
+//!     // Create a query cache where each dataset is identified by a PathBuf,
+//!     // and the summary is just a counter
+//!     coppice::query!(
+//!         CACHE(path: PathBuf) -> Counter,
+//!         load_json_dump(path),  // Load the data in each path with `load_json_dump`
+//!         _program => Counter::new(1) // And count 1 for each Program in the json dump
+//!     );
+//!
+//!     Ok(CACHE.nullary_query(files)?.count)
 //! }
 //! ```
 //!
@@ -82,14 +84,15 @@
 //!
 //! ```ignore
 //! fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
-//!     let occurrences = map_reduce(
-//!         files,
-//!         (),   // no parameter
-//!         &(),  // no join key
-//!         &|path| load_json_dump(path),
-//!         &|_token, _params, _keys, row| {
+//!     coppice::query!(
+//!         // This time, we go from data in PathBuf to a Histogram keyed on String names
+//!         CACHE(path: PathBuf) -> Histogram<String>,
+//!         load_json_dump(path),  // Again, load the Programs in each json file
+//!         row => {
 //!             let mut ret: Histogram<String> = Default::default();
 //!
+//!             // For each work in the row (in the program), add 1
+//!             // for each occurrence of a composer.
 //!             for work in row.works.iter() {
 //!                 if let Some(composer) = &work.composer_name {
 //!                     ret.observe(composer.to_owned(), Counter::new(1));
@@ -97,72 +100,88 @@
 //!             }
 //!
 //!             ret
-//!         },
-//!     )?;
+//!         }
+//!     );
 //!
-//!     Ok(occurrences.into_popularity_sorted_vec())
+//!     Ok(CACHE.nullary_query(files)?.into_popularity_sorted_vec())
 //! }
 //! ```
 //!
 //! It's nice that the above is automatically cached and parallelised,
-//! but that's nothing super interesting.  The next one should be more
-//! interesting: we can accept an optional "root" composer, and count
-//! composer occurrences for programs in which the root composer was
+//! but that's nothing super interesting.  The next one should better
+//! motivate the approach: we filter down the programs to only those that
+//! occurred in a given venue, and accept an optional "root"
+//! composer. The histogram count composer occurrences for programs
+//! that included a given venue and in which the root composer was
 //! also featured.
 //!
 //! ```ignore
 //! fn count_composer_cooccurrences(
 //!     files: &[PathBuf],
+//!     venue: String,
 //!     root_composer: Option<String>,
 //! ) -> Result<Vec<(String, u64)>, &'static str> {
-//!     use rayon::iter::IntoParallelIterator;
-//!     use rayon::iter::ParallelIterator;
+//!     coppice::query!(
+//!         // We take a PathBuf, a venue, and maybe a root composer, and return a histogram keyed on composer names.
+//!         COOCCURRENCES(path: PathBuf, venue: String, root_composer: Option<String>) -> Histogram<String>,
+//!         load_json_dump(path),  // Again, load each `PathBuf` with `load_json_dump`.
+//!         rows => {
+//!             use rayon::iter::IntoParallelIterator;
+//!             use rayon::iter::ParallelIterator;
 //!
-//!     let cooccurrences = map_map_reduce(
-//!         files,
-//!         (),  // no parameter
-//!         &root_composer,  // one join key
-//!         &|path| load_json_dump(path),
-//!         &|_params, rows| {  // Convert each program to a list of composer names
-//!             Ok(rows.into_par_iter().map(|row| {
-//!                 row.works
-//!                     .iter()
-//!                     .map(|work| work.composer_name.clone())
-//!                     .collect::<Vec<Option<String>>>()
-//!             }))
+//!             let venue = venue.clone();  // Post-process the `Vec<Program>` returned by load_json_dump
+//!             Ok(rows
+//!                 .into_par_iter()
+//!                 // Make sure the target venue appears in at least one of the concerts
+//!                 .filter(move |row| row.concerts.iter().any(|concert| concert.venue == venue))
+//!                 // extract the composer names.
+//!                 .map(|row| {
+//!                     row.works
+//!                         .iter()
+//!                         .map(|work| work.composer_name.clone())
+//!                         .collect::<Vec<Option<String>>>()
+//!                 }))
 //!         },
-//!         &|token, _params, root_composer, composers| {
+//!         token, composers => {
+//!             let _ = venue;  // We don't use the venue here, it was already handled above
 //!             let mut ret: Histogram<String> = Default::default();
 //!
 //!             let mut maybe_composers: Vec<&Option<String>> = vec![&None];
 //!             maybe_composers.extend(composers.iter());
 //!
-//!             let (_token, found_match) = token.eql_any(root_composer, &maybe_composers);
+//!             let (mut token, root_composer) = token.focus(root_composer);
 //!
-//!             if found_match {
+//!             // If either `root_composer` is None, or matches one of the composers
+//!             // in the program...
+//!             let any_match = token.eql(root_composer, &None) || composers.iter().any(|composer| token.eql(root_composer, composer));
+//!
+//!             if any_match {
+//!                 // Count occurrences in the histogram
 //!                 for composer in composers.iter().flatten().cloned() {
 //!                     ret.observe(composer, Counter::new(1));
 //!                 }
 //!             }
 //!
 //!             ret
-//!         },
-//!     )?;
+//!         }
+//!     );
 //!
-//!     Ok(cooccurrences.into_popularity_sorted_vec())
+//!     Ok(COOCCURRENCES
+//!         .query(files, &venue, &root_composer)?
+//!         .into_popularity_sorted_vec())
 //! }
 //! ```
 //!
-//! This more complex examples shows what's interesting about Coppice: the `map_map_reduce`
-//! call scans the files *once* regardless of how many different `root_composer` values
-//! we pass.
+//! This more complex examples shows what's interesting about Coppice:
+//! the `query` call scans the files *once* regardless of how many
+//! different `root_composer` values we pass.
 //!
-//! On my laptop, the first call to `count_composer_cooccurrences` takes 8 seconds.
+//! On my laptop, the first call to `count_composer_cooccurrences` takes 2 seconds.
 //! Subsequence calls with various root composers (e.g., count how many times works
-//! by each composer was played in the same program as Wagner) take 200 *micro* seconds,
-//! without any file I/O.  This is possible because [`map_reduce()`] enumerates all
-//! possible values of `root_composer` that would result in a non-trival result, for
-//! each row, and caches the result in a (bad) trie.
+//! by each composer was played in the same program as Wagner) take ~100 *micro* seconds,
+//! without any file I/O.  This is possible because `COOCCURRENCES.query` enumerates
+//! all possible values of `root_composer` that would result in a non-trival result
+//! for each row, and caches the result in a (bad) trie.
 
 pub mod aggregates;
 mod bad_trie;
@@ -179,7 +198,7 @@ pub use map_reduce::map_map_reduce;
 pub use map_reduce::map_reduce;
 pub use map_reduce::Query;
 
-/// Builds a `static Box<dyn Query>`.
+/// Builds a `static Box<dyn Query>` for a fixed set of loading / mapping functions.
 ///
 /// The general form is
 ///
