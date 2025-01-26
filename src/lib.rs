@@ -173,8 +173,55 @@ use reverser::Inverse;
 use reverser::InverseContext;
 
 pub use map_reduce::clear_all_caches;
+pub use map_reduce::make_map_map_reduce;
+pub use map_reduce::make_map_reduce;
 pub use map_reduce::map_map_reduce;
 pub use map_reduce::map_reduce;
+pub use map_reduce::Query;
+
+pub trait NullaryQuery<
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Summary: Aggregate + Send + 'static,
+>: Query<Tablet, (), (), Summary>
+{
+    fn nullary_query(&self, tablets: &[Tablet]) -> Result<Summary, &'static str> {
+        self.query(tablets, &(), &())
+    }
+}
+
+impl<
+        Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+        Summary: Aggregate + Send + 'static,
+        T: Query<Tablet, (), (), Summary>,
+    > NullaryQuery<Tablet, Summary> for T
+{
+}
+
+pub trait ParamQuery<
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Params: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Summary: Aggregate + Send + 'static,
+>: Query<Tablet, Params, (), Summary>
+{
+    fn param_query(&self, tablets: &[Tablet], params: &Params) -> Result<Summary, &'static str> {
+        self.query(tablets, params, &())
+    }
+}
+
+pub trait JoinQuery<
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    JoinKeysT: JoinKeys + ?Sized + 'static,
+    Summary: Aggregate + Send + 'static,
+>: Query<Tablet, (), JoinKeysT, Summary>
+{
+    fn join_query(
+        &self,
+        tablets: &[Tablet],
+        join_keys: &JoinKeysT,
+    ) -> Result<Summary, &'static str> {
+        self.query(tablets, &(), join_keys)
+    }
+}
 
 /// Coppice caches results from aggregate queries where the query results
 /// implement the [`Aggregate`] trait.

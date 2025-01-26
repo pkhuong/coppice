@@ -2,6 +2,8 @@
 //! on the [New York Philharmonic Performance History](https://github.com/nyphilarchive/PerformanceHistory).
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::LazyLock;
 
 use serde::Deserialize;
 
@@ -106,7 +108,7 @@ fn list_json_files(base_dir: impl AsRef<Path>) -> std::io::Result<Vec<PathBuf>> 
 fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
     let ret = map_reduce(
         files,
-        (),
+        &(),
         &(),
         &|path| load_json_dump(path),
         &|_token, _params, _keys, _row| Counter::new(1),
@@ -116,45 +118,45 @@ fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
 }
 
 fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
-    let occurrences = map_reduce(
-        files,
-        (),
-        &(),
-        &|path| load_json_dump(path),
-        &|_token, _params, _keys, row| {
-            let mut ret: Histogram<String> = Default::default();
+    static CACHE: LazyLock<Arc<dyn coppice::NullaryQuery<PathBuf, Histogram<String>>>> =
+        LazyLock::new(|| {
+            coppice::make_map_reduce(
+                &|path| load_json_dump(path),
+                &|_token, _params, _keys, row| {
+                    let mut ret: Histogram<String> = Default::default();
 
-            for work in row.works.iter() {
-                if let Some(composer) = &work.composer_name {
-                    ret.observe(composer.to_owned(), Counter::new(1));
-                }
-            }
+                    for work in row.works.iter() {
+                        if let Some(composer) = &work.composer_name {
+                            ret.observe(composer.to_owned(), Counter::new(1));
+                        }
+                    }
 
-            ret
-        },
-    )?;
+                    ret
+                },
+            )
+        });
 
-    Ok(occurrences.into_popularity_sorted_vec())
+    Ok(CACHE.nullary_query(files)?.into_popularity_sorted_vec())
 }
 
 fn count_venue_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
-    let occurrences = map_reduce(
-        files,
-        (),
-        &(),
-        &|path| load_json_dump(path),
-        &|_token, _params, _keys, row| {
-            let mut ret: Histogram<String> = Default::default();
+    static CACHE: LazyLock<Arc<dyn coppice::NullaryQuery<PathBuf, Histogram<String>>>> =
+        LazyLock::new(|| {
+            coppice::make_map_reduce(
+                &|path| load_json_dump(path),
+                &|_token, _params, _keys, row| {
+                    let mut ret: Histogram<String> = Default::default();
 
-            for concert in row.concerts.iter() {
-                ret.observe(concert.venue.to_owned(), Counter::new(1));
-            }
+                    for concert in row.concerts.iter() {
+                        ret.observe(concert.venue.to_owned(), Counter::new(1));
+                    }
 
-            ret
-        },
-    )?;
+                    ret
+                },
+            )
+        });
 
-    Ok(occurrences.into_popularity_sorted_vec())
+    Ok(CACHE.nullary_query(files)?.into_popularity_sorted_vec())
 }
 
 fn count_composer_cooccurrences(
@@ -167,7 +169,7 @@ fn count_composer_cooccurrences(
 
     let cooccurrences = map_map_reduce(
         files,
-        venue,
+        &venue,
         &root_composer,
         &|path| load_json_dump(path),
         &|venue, rows| {
