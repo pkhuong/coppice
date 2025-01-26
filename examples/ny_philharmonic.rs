@@ -7,8 +7,6 @@ use serde::Deserialize;
 
 use coppice::aggregates::Counter;
 use coppice::aggregates::Histogram;
-use coppice::map_map_reduce;
-use coppice::map_reduce;
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -104,24 +102,20 @@ fn list_json_files(base_dir: impl AsRef<Path>) -> std::io::Result<Vec<PathBuf>> 
 }
 
 fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
-    let ret = map_reduce(
-        files,
-        &(),
-        &(),
-        &|path| load_json_dump(path),
-        &|_token, _params, _keys, _row| Counter::new(1),
-    )?
-    .count;
-    Ok(ret)
+    coppice::query!(
+        CACHE(path: PathBuf) -> Counter,
+        load_json_dump(path),
+        _row => Counter::new(1)
+    );
+
+    Ok(CACHE.nullary_query(files)?.count)
 }
 
 fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
-    let occurrences = map_reduce(
-        files,
-        &(),
-        &(),
-        &|path| load_json_dump(path),
-        &|_token, _params, _keys, row| {
+    coppice::query!(
+        CACHE(path: PathBuf) -> Histogram<String>,
+        load_json_dump(path),
+        row => {
             let mut ret: Histogram<String> = Default::default();
 
             for work in row.works.iter() {
@@ -131,19 +125,17 @@ fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &
             }
 
             ret
-        },
-    )?;
+        }
+    );
 
-    Ok(occurrences.into_popularity_sorted_vec())
+    Ok(CACHE.nullary_query(files)?.into_popularity_sorted_vec())
 }
 
 fn count_venue_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
-    let occurrences = map_reduce(
-        files,
-        &(),
-        &(),
-        &|path| load_json_dump(path),
-        &|_token, _params, _keys, row| {
+    coppice::query!(
+        CACHE(path: PathBuf) -> Histogram<String>,
+        load_json_dump(path),
+        row => {
             let mut ret: Histogram<String> = Default::default();
 
             for concert in row.concerts.iter() {
@@ -151,10 +143,10 @@ fn count_venue_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'st
             }
 
             ret
-        },
-    )?;
+        }
+    );
 
-    Ok(occurrences.into_popularity_sorted_vec())
+    Ok(CACHE.nullary_query(files)?.into_popularity_sorted_vec())
 }
 
 fn count_composer_cooccurrences(
@@ -162,15 +154,13 @@ fn count_composer_cooccurrences(
     venue: String,
     root_composer: Option<String>,
 ) -> Result<Vec<(String, u64)>, &'static str> {
-    use rayon::iter::IntoParallelIterator;
-    use rayon::iter::ParallelIterator;
+    coppice::query!(
+        COOCCURRENCES(path: PathBuf, venue: String, root_composer: Option<String>) -> Histogram<String>,
+        load_json_dump(path),
+        rows => {
+            use rayon::iter::IntoParallelIterator;
+            use rayon::iter::ParallelIterator;
 
-    let cooccurrences = map_map_reduce(
-        files,
-        &venue,
-        &root_composer,
-        &|path| load_json_dump(path),
-        &|venue, rows| {
             let venue = venue.clone();
             Ok(rows
                 .into_par_iter()
@@ -182,7 +172,8 @@ fn count_composer_cooccurrences(
                         .collect::<Vec<Option<String>>>()
                 }))
         },
-        &|token, _venue, root_composer, composers| {
+        token, composers => {
+            let _ = venue;
             let mut ret: Histogram<String> = Default::default();
 
             let mut maybe_composers: Vec<&Option<String>> = vec![&None];
@@ -190,17 +181,21 @@ fn count_composer_cooccurrences(
 
             let (mut token, root_composer) = token.focus(root_composer);
 
-            if token.eql_any(root_composer, &maybe_composers) {
+            let any_match = token.eql(root_composer, &None) || composers.iter().any(|composer| token.eql(root_composer, composer));
+
+            if any_match {
                 for composer in composers.iter().flatten().cloned() {
                     ret.observe(composer, Counter::new(1));
                 }
             }
 
             ret
-        },
-    )?;
+        }
+    );
 
-    Ok(cooccurrences.into_popularity_sorted_vec())
+    Ok(COOCCURRENCES
+        .query(files, &venue, &root_composer)?
+        .into_popularity_sorted_vec())
 }
 
 fn main() -> std::io::Result<()> {
