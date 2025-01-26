@@ -179,6 +179,133 @@ pub use map_reduce::map_map_reduce;
 pub use map_reduce::map_reduce;
 pub use map_reduce::Query;
 
+/// Builds a `static Box<dyn Query>`.
+///
+/// The general form is
+///
+/// ```ignore
+/// query!(QUERY_NAME(tablet_var: TabletType, params: ParamsType, join_keys: JoinKeys) -> Summary,
+///       [load_tablet(tablet_var)],
+///       loaded_data => [transform(params, loaded_data)],
+///       token, row => [map_function(token, params, join_keys, row)]);
+/// ```
+///
+/// The `loaded_data => [transform ...]` entry is optional: when missing, the
+/// values returned by `load_tablet` are passed straight to the map function
+/// (row by row).
+///
+/// The `params: ParamsType` and `join_keys: JoinKeys` parameters may
+/// be omitted *at the same time*.  When absent, they're implicitly
+/// the unit `()`.
+#[macro_export]
+macro_rules! query {
+    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: $Params:ty, $join_args:ident: $JoinKeys:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            Box<dyn coppice::Query<$Tablet, $Params, $JoinKeys, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_reduce::<$Summary, $Tablet, $Params, $JoinKeys, _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|$token_arg, $params_arg, $join_args, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    ($name:ident($load_arg:ident: $Tablet:ty, $params_arg:ident: $Params:ty, $join_args:ident: $JoinKeys:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $input_arg:ident => $transform_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            Box<dyn coppice::Query<$Tablet, $Params, $JoinKeys, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_map_reduce::<$Summary, $Tablet, $Params, $JoinKeys, _, _, _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|$params_arg, $input_arg| $transform_expr,
+                &|$token_arg, $params_arg, $join_args, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    ($name:ident($load_arg:ident: $Tablet:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $row_arg:ident => $row_expr:expr
+    ) => {
+        static $name: std::sync::LazyLock<Box<dyn coppice::NullaryQuery<$Tablet, $Summary>>> =
+            std::sync::LazyLock::new(|| {
+                coppice::make_map_reduce::<$Summary, $Tablet, (), (), _, _, _, _>(
+                    &|$load_arg| $load_expr,
+                    &|_, _, _, $row_arg| $row_expr,
+                )
+            });
+    };
+
+    ($name:ident($load_arg:ident:$Tablet:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $input_arg:ident => $transform_expr:expr,
+     $row_arg:ident => $row_expr:expr
+    ) => {
+        static $name: std::sync::LazyLock<Box<dyn coppice::NullaryQuery<$Tablet, $Summary>>> =
+            std::sync::LazyLock::new(|| {
+                coppice::make_map_map_reduce::<$Summary, $Tablet, (), (), _, _, _, _>(
+                    &|$load_arg| $load_expr,
+                    &|_, $input_arg| $transform_expr,
+                    &|_, _, _, $row_arg| $row_expr,
+                )
+            });
+    };
+}
+
+/// A [`NullaryQuery`] is a [`Query`] that accepts only a list of tablets:
+/// the params and join keys are always ().
+pub trait NullaryQuery<
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Summary: Aggregate + Send + 'static,
+>: Query<Tablet, (), (), Summary>
+{
+    fn nullary_query(&self, tablets: &[Tablet]) -> Result<Summary, &'static str> {
+        self.query(tablets, &(), &())
+    }
+}
+
+impl<
+        Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+        Summary: Aggregate + Send + 'static,
+        T: Query<Tablet, (), (), Summary>,
+    > NullaryQuery<Tablet, Summary> for T
+{
+}
+
+/// A [`ParamQuery`] is a [`Query`] that accepts only a list of tablets
+/// and query parameters; join keys are always ().
+pub trait ParamQuery<
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Params: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    Summary: Aggregate + Send + 'static,
+>: Query<Tablet, Params, (), Summary>
+{
+    fn param_query(&self, tablets: &[Tablet], params: &Params) -> Result<Summary, &'static str> {
+        self.query(tablets, params, &())
+    }
+}
+
+/// A [`JoinQuery`] is a query that accepts only a list of tablets
+/// and join keys; query parameters are always ().
+pub trait JoinQuery<
+    Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
+    JoinKeysT: JoinKeys + ?Sized + 'static,
+    Summary: Aggregate + Send + 'static,
+>: Query<Tablet, (), JoinKeysT, Summary>
+{
+    fn join_query(
+        &self,
+        tablets: &[Tablet],
+        join_keys: &JoinKeysT,
+    ) -> Result<Summary, &'static str> {
+        self.query(tablets, &(), join_keys)
+    }
+}
+
 /// Coppice caches results from aggregate queries where the query results
 /// implement the [`Aggregate`] trait.
 ///
