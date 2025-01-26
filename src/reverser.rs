@@ -9,8 +9,14 @@ use crate::BaseJoinKey;
 #[derive(Debug)]
 pub struct Inverse<'tag, T: BaseJoinKey + ?Sized>(
     u8,
+    std::marker::PhantomData<fn(&'tag T) -> &'tag T>, // Invariant over 'tag
+);
+
+#[derive(Copy, Clone, Debug)]
+pub struct FocusedInverse<'tag, T: BaseJoinKey + ?Sized>(
+    u8,
     std::marker::PhantomData<fn(&'tag T) -> &'tag T>,
-); // Invariant over 'tag
+);
 
 #[derive(Debug, Default)]
 pub struct InverseContext<'tag> {
@@ -47,47 +53,85 @@ pub struct SearchToken<'tag, 'a> {
     _marker: std::marker::PhantomData<fn(&'tag ()) -> &'tag ()>,
 }
 
-impl<'tag> SearchToken<'tag, '_> {
-    pub fn get<T: BaseJoinKey + ?Sized>(
+pub struct FocusedToken<'tag, 'a> {
+    state: &'a mut SearchState,
+    // Make the lifetime invariant
+    _marker: std::marker::PhantomData<fn(&'tag ()) -> &'tag ()>,
+}
+
+impl<'tag, 'a> SearchToken<'tag, 'a> {
+    pub fn focus<T: BaseJoinKey + ?Sized>(
         self,
         input: &Inverse<'tag, T>,
+    ) -> (FocusedToken<'tag, 'a>, FocusedInverse<'tag, T>) {
+        (
+            FocusedToken {
+                state: self.state,
+                _marker: self._marker,
+            },
+            FocusedInverse(input.0, input.1),
+        )
+    }
+}
+
+impl<'tag, 'a> FocusedToken<'tag, 'a> {
+    pub fn unfocus<T: BaseJoinKey + ?Sized>(
+        self,
+        _prev: FocusedInverse<'tag, T>,
+    ) -> SearchToken<'tag, 'a> {
+        SearchToken {
+            state: self.state,
+            _marker: self._marker,
+        }
+    }
+
+    pub fn refocus<T: BaseJoinKey + ?Sized, U: BaseJoinKey + ?Sized>(
+        self,
+        prev: FocusedInverse<'tag, T>,
+        input: &Inverse<'tag, U>,
+    ) -> (Self, FocusedInverse<'tag, U>) {
+        self.unfocus(prev).focus(input)
+    }
+
+    pub fn get<T: BaseJoinKey + ?Sized>(
+        &mut self,
+        input: FocusedInverse<'tag, T>,
         index: u32,
-    ) -> (Self, bool) {
-        self.state
-            .check_mapping(input.0, input as *const Inverse<_> as usize);
-        let ret = self.state.get(input.0, index);
-        (self, ret)
+    ) -> bool {
+        self.state.get(input.0, index)
     }
 
     fn eql_raw<T: BaseJoinKey + ?Sized>(
-        self,
-        input: &Inverse<'tag, T>,
+        &mut self,
+        input: FocusedInverse<'tag, T>,
         bytes: &[u8],
-    ) -> (Self, bool) {
-        self.state
-            .check_mapping(input.0, input as *const Inverse<_> as usize);
+    ) -> bool {
         for (byte_idx, byte) in bytes.iter().copied().enumerate() {
             for bit_idx in 0..8 {
                 let wanted = (byte >> bit_idx) & 1 != 0;
                 if self.state.get(input.0, (8 * byte_idx + bit_idx) as u32) != wanted {
-                    return (self, false);
+                    return false;
                 }
             }
         }
 
-        (self, true)
+        true
     }
 
-    pub fn eql<T: BaseJoinKey + ?Sized>(self, input: &Inverse<'tag, T>, value: &T) -> (Self, bool) {
+    pub fn eql<T: BaseJoinKey + ?Sized>(
+        &mut self,
+        input: FocusedInverse<'tag, T>,
+        value: &T,
+    ) -> bool {
         let value = value.to_bytes();
         self.eql_raw(input, value.as_ref())
     }
 
     pub fn eql_any<T: BaseJoinKey + ?Sized>(
-        self,
-        input: &Inverse<'tag, T>,
+        &mut self,
+        input: FocusedInverse<'tag, T>,
         values: &[&T],
-    ) -> (Self, bool) {
+    ) -> bool {
         fn get_bit(bytes: &[u8], idx: usize) -> bool {
             let byte_index = idx / 8;
             let sub_idx = idx % 8;
@@ -95,8 +139,6 @@ impl<'tag> SearchToken<'tag, '_> {
             (bytes.get(byte_index).unwrap_or(&0) & (1 << sub_idx)) != 0
         }
 
-        self.state
-            .check_mapping(input.0, input as *const Inverse<_> as usize);
         let values = values.iter().map(|x| x.to_bytes()).collect::<Vec<_>>();
         let mut raw_values: Vec<&[u8]> = values.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
         raw_values.sort();
@@ -113,7 +155,7 @@ impl<'tag> SearchToken<'tag, '_> {
         if let Some(highlander) = raw_values.first() {
             self.eql_raw(input, highlander)
         } else {
-            (self, false)
+            false
         }
     }
 }
@@ -122,7 +164,6 @@ type Choice = (u8, u32, bool);
 
 #[derive(Debug, Default)]
 struct SearchState {
-    index_mapping: HashMap<u8, usize>,
     cache: HashMap<(u8, u32), bool>,
     num_choices: usize,
     next_path_to_explore: Vec<Choice>,
@@ -132,12 +173,6 @@ struct SearchState {
 impl SearchState {
     fn new() -> SearchState {
         Default::default()
-    }
-
-    fn check_mapping(&mut self, input: u8, addr: usize) {
-        if *self.index_mapping.entry(input).or_insert(addr) != addr {
-            self.error = Some("invalid mapping for input join key");
-        }
     }
 
     fn get(&mut self, input: u8, index: u32) -> bool {
@@ -259,8 +294,10 @@ mod test {
             &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
             |token, inputs| -> Counter {
                 assert_eq!(inputs.len(), 2);
-                let (token, x) = token.get(&inputs[0], 1);
-                let (_token, y) = token.get(&inputs[1], 0);
+                let (mut token, xtok) = token.focus(&inputs[0]);
+                let x = token.get(xtok, 1);
+                let (mut token, y) = token.refocus(xtok, &inputs[1]);
+                let y = token.get(y, 0);
 
                 Counter::new((x as u64) + (y as u64))
             },
@@ -297,8 +334,10 @@ mod test {
             &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
             |token, inputs| -> Counter {
                 assert_eq!(inputs.len(), 2);
-                let (token, _x) = token.get(&inputs[0], 1);
-                let (_token, _y) = token.get(&inputs[1], 0);
+                let (mut token, x) = token.focus(&inputs[0]);
+                let _x = token.get(x, 1);
+                let (mut token, y) = token.refocus(x, &inputs[1]);
+                let _y = token.get(y, 0);
 
                 Counter { count: 0 }
             },
@@ -317,8 +356,10 @@ mod test {
             &[ctx.fake(&0u8).unwrap(), ctx.fake(&0u8).unwrap()],
             |token, inputs| -> Counter {
                 assert_eq!(inputs.len(), 2);
-                let (token, _x) = token.get(&inputs[0], 1);
-                let (_token, _y) = token.get(&inputs[1], 0);
+                let (mut token, x) = token.focus(&inputs[0]);
+                let _x = token.get(x, 1);
+                let (mut token, y) = token.refocus(x, &inputs[1]);
+                let _y = token.get(y, 0);
 
                 Counter { count: 1 }
             },
@@ -341,8 +382,8 @@ mod test {
             vec![(1u8, 2usize), (2u8, 3usize), (1u8, 4usize)],
             &ctx.fake(&0u8).unwrap(),
             |token, needle, (key, value)| {
-                let (_token, matches) = token.eql(needle, key);
-                let count = if matches { *value } else { 0 };
+                let (mut token, needle) = token.focus(needle);
+                let count = if token.eql(needle, key) { *value } else { 0 };
                 Counter::new(count as u64)
             },
         )

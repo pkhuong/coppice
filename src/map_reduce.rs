@@ -390,8 +390,9 @@ mod test {
             },
             &|token, params, needle, (key, value)| {
                 assert_eq!(*params, ("test",));
-                let (_token, matches) = token.eql(needle, key);
-                let count = if matches { *value } else { 0 };
+                let (mut token, needle) = token.focus(needle);
+
+                let count = if token.eql(needle, key) { *value } else { 0 };
                 Counter::new(count as u64)
             },
         )

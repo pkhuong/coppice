@@ -163,9 +163,9 @@ fn count_composer_cooccurrences(
             let mut maybe_composers: Vec<&Option<String>> = vec![&None];
             maybe_composers.extend(composers.iter());
 
-            let (_token, found_match) = token.eql_any(root_composer, &maybe_composers);
+            let (mut token, root_composer) = token.focus(root_composer);
 
-            if found_match {
+            if token.eql_any(root_composer, &maybe_composers) {
                 for composer in composers.iter().flatten().cloned() {
                     ret.observe(composer, Counter::new(1));
                 }
