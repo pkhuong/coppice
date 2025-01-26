@@ -137,8 +137,29 @@ fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &
     Ok(occurrences.into_popularity_sorted_vec())
 }
 
+fn count_venue_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
+    let occurrences = map_reduce(
+        files,
+        (),
+        &(),
+        &|path| load_json_dump(path),
+        &|_token, _params, _keys, row| {
+            let mut ret: Histogram<String> = Default::default();
+
+            for concert in row.concerts.iter() {
+                ret.observe(concert.venue.to_owned(), Counter::new(1));
+            }
+
+            ret
+        },
+    )?;
+
+    Ok(occurrences.into_popularity_sorted_vec())
+}
+
 fn count_composer_cooccurrences(
     files: &[PathBuf],
+    venue: String,
     root_composer: Option<String>,
 ) -> Result<Vec<(String, u64)>, &'static str> {
     use rayon::iter::IntoParallelIterator;
@@ -146,18 +167,22 @@ fn count_composer_cooccurrences(
 
     let cooccurrences = map_map_reduce(
         files,
-        (),
+        venue,
         &root_composer,
         &|path| load_json_dump(path),
-        &|_params, rows| {
-            Ok(rows.into_par_iter().map(|row| {
-                row.works
-                    .iter()
-                    .map(|work| work.composer_name.clone())
-                    .collect::<Vec<Option<String>>>()
-            }))
+        &|venue, rows| {
+            let venue = venue.clone();
+            Ok(rows
+                .into_par_iter()
+                .filter(move |row| row.concerts.iter().any(|concert| concert.venue == venue))
+                .map(|row| {
+                    row.works
+                        .iter()
+                        .map(|work| work.composer_name.clone())
+                        .collect::<Vec<Option<String>>>()
+                }))
         },
-        &|token, _params, root_composer, composers| {
+        &|token, _venue, root_composer, composers| {
             let mut ret: Histogram<String> = Default::default();
 
             let mut maybe_composers: Vec<&Option<String>> = vec![&None];
@@ -214,15 +239,28 @@ fn main() -> std::io::Result<()> {
         );
     }
 
+    {
+        let start = std::time::Instant::now();
+        let venue_occurrences = count_venue_occurrences(&data_files).map_err(other)?;
+        println!(
+            "top 5 venues (duration={:?}):\t{:?}",
+            start.elapsed(),
+            venue_occurrences.chunks(5).next().unwrap_or(&[])
+        );
+    }
+
     println!();
+
+    let venue = "Carnegie Hall".to_string();
 
     let top_composers: Vec<String>;
     {
         let start = std::time::Instant::now();
         let composer_occurrences =
-            count_composer_cooccurrences(&data_files, None).map_err(other)?;
+            count_composer_cooccurrences(&data_files, venue.clone(), None).map_err(other)?;
         println!(
-            "top 5 composers again (duration={:?}):\t{:?}",
+            "top 5 composers at {} (duration={:?}):\n\t{:?}",
+            &venue,
             start.elapsed(),
             composer_occurrences.chunks(5).next().unwrap_or(&[])
         );
@@ -237,11 +275,12 @@ fn main() -> std::io::Result<()> {
     for root_composer in top_composers.into_iter() {
         let start = std::time::Instant::now();
         let composer_cooccurrences =
-            count_composer_cooccurrences(&data_files, Some(root_composer.clone()))
+            count_composer_cooccurrences(&data_files, venue.clone(), Some(root_composer.clone()))
                 .map_err(other)?;
         println!(
-            "top 5 composers with '{}' (duration={:?}):\n\t{:?}",
+            "top 5 composers with '{}' at {} (duration={:?}):\n\t{:?}",
             &root_composer,
+            &venue,
             start.elapsed(),
             composer_cooccurrences.chunks(5).next().unwrap_or(&[])
         );
