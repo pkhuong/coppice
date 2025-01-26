@@ -179,6 +179,67 @@ pub use map_reduce::map_map_reduce;
 pub use map_reduce::map_reduce;
 pub use map_reduce::Query;
 
+#[macro_export]
+macro_rules! query {
+    ($name:ident($load_arg:ident: $Tablet:ty,$params_arg:ident:  $Params:ty, $join_args:ident: $JoinKeys:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            std::sync::Arc<dyn coppice::Query<$Tablet, $Params, $JoinKeys, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_reduce::<$Summary, $Tablet, $Params, $JoinKeys, _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|$token_arg, $params_arg, $join_args, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    ($name:ident($load_arg:ident : $Tablet:ty, $params_arg:ident : $Params:ty, $join_args:ident : $JoinKeys:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $input_arg:ident => $transform_expr:expr,
+     $token_arg:ident, $row_arg:ident => $row_expr:expr) => {
+        static $name: std::sync::LazyLock<
+            std::sync::Arc<dyn coppice::Query<$Tablet, $Params, $JoinKeys, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_map_reduce::<$Summary, $Tablet, $Params, $JoinKeys, _, _, _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|$params_arg, $input_arg| $transform_expr,
+                &|$token_arg, $params_arg, $join_args, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    ($name:ident($load_arg:ident: $Tablet:ty) -> $Summary:ty,
+     $load_expr:expr,
+     $row_arg:ident => $row_expr:expr
+    ) => {
+        static $name: std::sync::LazyLock<
+            std::sync::Arc<dyn coppice::NullaryQuery<$Tablet, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_reduce::<$Summary, $Tablet, (), (), _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|_, _, _, $row_arg| $row_expr,
+            )
+        });
+    };
+
+    ($name:ident<$Tablet:ty => $Summary:ty>,
+     $load_arg:ident => $load_expr:expr,
+     $input_arg:ident => $transform_expr:expr,
+     $row_arg:ident => $row_expr:expr
+    ) => {
+        static $name: std::sync::LazyLock<
+            std::sync::Arc<dyn coppice::NullaryQuery<$Tablet, $Summary>>,
+        > = std::sync::LazyLock::new(|| {
+            coppice::make_map_map_reduce::<$Summary, $Tablet, (), (), _, _, _, _>(
+                &|$load_arg| $load_expr,
+                &|_, $input_arg| $transform_expr,
+                &|_, _, _, $row_arg| $row_expr,
+            )
+        });
+    };
+}
+
 pub trait NullaryQuery<
     Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
     Summary: Aggregate + Send + 'static,

@@ -410,7 +410,7 @@ pub fn clear_all_caches() {
     SUMMARY_CACHES.lock().unwrap().clear();
 }
 
-pub fn make_map_reduce<Summary, Tablet, Params, Row, Rows, JoinKeysT, RowFn, WorkerFn>(
+pub fn make_map_reduce<Summary, Tablet, Params, JoinKeysT, Row, Rows, RowFn, WorkerFn>(
     row_fn: &'static RowFn,
     worker: &'static WorkerFn,
 ) -> Arc<impl Query<Tablet, Params, JoinKeysT, Summary>>
@@ -432,8 +432,8 @@ pub fn make_map_map_reduce<
     Summary,
     Tablet,
     Params,
-    InputRows,
     JoinKeysT,
+    InputRows,
     RowFn,
     TransformFn,
     TransformedRow,
@@ -443,7 +443,7 @@ pub fn make_map_map_reduce<
     row_fn: &'static RowFn,
     transform_fn: &'static TransformFn,
     worker: &'static WorkerFn,
-) -> impl Query<Tablet, Params, JoinKeysT, Summary>
+) -> Arc<impl Query<Tablet, Params, JoinKeysT, Summary>>
 where
     Summary: Aggregate + Send + 'static,
     Tablet: std::hash::Hash + Eq + Clone + Sync + Send + 'static,
@@ -461,7 +461,7 @@ where
         ) -> Summary
         + Sync,
 {
-    MapReduceCache::new(row_fn, transform_fn, worker)
+    Arc::new(MapReduceCache::new(row_fn, transform_fn, worker))
 }
 
 /// The [`map_reduce`] generic function takes a list of tablets
