@@ -173,8 +173,11 @@ use reverser::Inverse;
 use reverser::InverseContext;
 
 pub use map_reduce::clear_all_caches;
+pub use map_reduce::make_map_map_reduce;
+pub use map_reduce::make_map_reduce;
 pub use map_reduce::map_map_reduce;
 pub use map_reduce::map_reduce;
+pub use map_reduce::Query;
 
 /// Coppice caches results from aggregate queries where the query results
 /// implement the [`Aggregate`] trait.

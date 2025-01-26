@@ -106,7 +106,7 @@ fn list_json_files(base_dir: impl AsRef<Path>) -> std::io::Result<Vec<PathBuf>> 
 fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
     let ret = map_reduce(
         files,
-        (),
+        &(),
         &(),
         &|path| load_json_dump(path),
         &|_token, _params, _keys, _row| Counter::new(1),
@@ -118,7 +118,7 @@ fn count_programs(files: &[PathBuf]) -> Result<u64, &'static str> {
 fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
     let occurrences = map_reduce(
         files,
-        (),
+        &(),
         &(),
         &|path| load_json_dump(path),
         &|_token, _params, _keys, row| {
@@ -140,7 +140,7 @@ fn count_composer_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &
 fn count_venue_occurrences(files: &[PathBuf]) -> Result<Vec<(String, u64)>, &'static str> {
     let occurrences = map_reduce(
         files,
-        (),
+        &(),
         &(),
         &|path| load_json_dump(path),
         &|_token, _params, _keys, row| {
@@ -167,7 +167,7 @@ fn count_composer_cooccurrences(
 
     let cooccurrences = map_map_reduce(
         files,
-        venue,
+        &venue,
         &root_composer,
         &|path| load_json_dump(path),
         &|venue, rows| {
