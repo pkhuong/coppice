@@ -12,11 +12,19 @@ pub struct Inverse<'tag, T: BaseJoinKey + ?Sized>(
     std::marker::PhantomData<fn(&'tag T) -> &'tag T>, // Invariant over 'tag
 );
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Debug)]
 pub struct FocusedInverse<'tag, T: BaseJoinKey + ?Sized>(
     u8,
     std::marker::PhantomData<fn(&'tag T) -> &'tag T>,
 );
+
+impl<T: BaseJoinKey + ?Sized> Clone for FocusedInverse<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: BaseJoinKey + ?Sized> Copy for FocusedInverse<'_, T> {}
 
 #[derive(Debug, Default)]
 pub struct InverseContext<'tag> {
